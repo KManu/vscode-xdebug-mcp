@@ -2,6 +2,7 @@
 .git/**
 .gitignore
 .gitattributes
+esbuild.js
 src/**
 **/*.ts
 **/*.map
@@ -10,6 +11,8 @@ tsconfig.*.json
 npm-debug.log*
 package-lock.json
 *.vsix
+out/**
+node_modules/**
 node_modules/.bin/**
 node_modules/**/test/**
 node_modules/**/tests/**
