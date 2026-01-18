@@ -1,0 +1,48 @@
+{
+  "name": "vscode-xdebug-mcp",
+  "displayName": "Xdebug MCP",
+  "publisher": "your-publisher",
+  "version": "0.0.1",
+  "description": "Expose Xdebug controls to MCP-aware VS Code agents.",
+  "main": "./out/extension.js",
+  "engines": {
+    "vscode": "^1.105.0"
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -w",
+    "vscode:prepublish": "npm run compile",
+    "package": "vsce package"
+  },
+  "keywords": [
+    "xdebug",
+    "mcp",
+    "debug"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "contributes": {
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "xdebugMcpProvider",
+        "label": "Xdebug MCP Provider"
+      }
+    ]
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.1",
+    "express": "^5.1.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.9.1",
+    "@types/vscode": "^1.105.0",
+    "typescript": "^5.9.3",
+    "vsce": "^2.15.0"
+  }
+}
