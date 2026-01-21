@@ -2,19 +2,23 @@ import { createServer, type IncomingMessage, type Server as HttpServer, type Ser
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { makeServer } from './server';
 
+// We bind locally so only the current machine can reach the MCP server.
 const HOST = '127.0.0.1';
 const PORT = 3098;
+// Guard against large JSON-RPC payloads from accidental dumps.
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 let runningServer: HttpServer | undefined;
 let serverUriPromise: Promise<string> | undefined;
 
-export async function startHttpServer(): Promise<string> {
+export async function startHttpServer(options: { version?: string } = {}): Promise<string> {
+  // Prevent multiple simultaneous server starts on extension reloads.
   if (serverUriPromise) {
     return serverUriPromise;
   }
 
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    // Only a single MCP endpoint is exposed; keep the surface area tight.
     const url = new URL(req.url ?? '/', `http://${HOST}:${PORT}`);
     if (url.pathname !== '/mcp') {
       res.statusCode = 404;
@@ -22,12 +26,14 @@ export async function startHttpServer(): Promise<string> {
       return;
     }
 
-    const server = makeServer();
+    // Create a new MCP server for each request. The transport manages lifecycle.
+    const server = makeServer({ version: options.version });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true
     });
 
+    // Normalize headers so the MCP SDK sees the expected Accept/Content-Type.
     const accept = req.headers.accept;
     if (req.method === 'POST') {
       if (!accept || !accept.includes('application/json') || !accept.includes('text/event-stream')) {
@@ -43,6 +49,7 @@ export async function startHttpServer(): Promise<string> {
       }
     }
 
+    // Manually parse JSON to enforce a hard size limit before buffering.
     const readJsonBody = async (): Promise<unknown> =>
       await new Promise((resolve, reject) => {
         let size = 0;
@@ -91,6 +98,7 @@ export async function startHttpServer(): Promise<string> {
       void closeTransport();
     };
 
+    // Clean up when the client disconnects (important for streaming responses).
     res.on('close', handleClose);
 
     let parsedBody: unknown | undefined;
@@ -98,6 +106,7 @@ export async function startHttpServer(): Promise<string> {
       try {
         parsedBody = await readJsonBody();
       } catch (error) {
+        // Return a JSON-RPC shaped error when parsing fails.
         if (!res.headersSent) {
           const message = error instanceof Error ? error.message : String(error);
           const status = (error as Error & { code?: string }).code === 'PAYLOAD_TOO_LARGE' ? 413 : 400;
@@ -120,6 +129,7 @@ export async function startHttpServer(): Promise<string> {
     }
 
     try {
+      // Connect the MCP server to the HTTP transport, then handle the request.
       await server.connect(transport);
       await transport.handleRequest(req, res, parsedBody);
     } catch (error) {
@@ -130,6 +140,7 @@ export async function startHttpServer(): Promise<string> {
         res.end(JSON.stringify({ error: message }));
       }
     } finally {
+      // Avoid leaking listeners in case of streaming responses.
       if (typeof res.off === 'function') {
         res.off('close', handleClose);
       } else {
@@ -141,6 +152,7 @@ export async function startHttpServer(): Promise<string> {
   });
 
   serverUriPromise = new Promise<string>((resolve, reject) => {
+    // Start listening once; resolves with the MCP endpoint URL.
     httpServer.listen(PORT, HOST, () => {
       resolve(`http://${HOST}:${PORT}/mcp`);
     });
@@ -171,6 +183,7 @@ export async function stopHttpServer(): Promise<void> {
     });
   });
 
+  // Reset cached state so a future activate can restart cleanly.
   runningServer = undefined;
   serverUriPromise = undefined;
 }
