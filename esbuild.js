@@ -1,5 +1,7 @@
 const esbuild = require('esbuild');
 
+// Minimal bundler entry used by VS Code extension build/watch.
+
 const production = process.argv.includes('--production');
 const watch = process.argv.includes('--watch');
 
