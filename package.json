@@ -1,8 +1,8 @@
 {
   "name": "vscode-xdebug-mcp",
   "displayName": "Xdebug MCP",
-  "publisher": "your-publisher",
-  "version": "0.0.1",
+  "publisher": "KwabenaManu",
+  "version": "0.0.2",
   "description": "Expose Xdebug controls to MCP-aware VS Code agents.",
   "main": "./dist/extension.js",
   "engines": {

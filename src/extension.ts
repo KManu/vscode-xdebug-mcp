@@ -12,10 +12,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   try {
     // Start the HTTP MCP server early so agents can connect immediately.
     const uri = await startHttpServer({ version: serverVersion });
-    console.log(`Xdebug MCP server listening at ${uri}`);
+    console.log(`Vscode Xdebug MCP server listening at ${uri}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`Failed to start Xdebug MCP server: ${message}`);
+    console.error(`Failed to start Vscode Xdebug MCP server: ${message}`);
   }
 
   // MCP provider tells VS Code (and agent clients) how to reach this server.

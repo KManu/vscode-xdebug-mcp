@@ -1,6 +1,7 @@
 # vscode-xdebug-mcp
 
-Expose your active PHP/Xdebug session as an MCP server inside VS Code so agent clients (like Codex) can inspect and control live debug sessions.
+Expose your active PHP/Xdebug session as an MCP server inside VS Code so agent clients (Codex) can inspect and control live debug sessions.
+This mcp server is currently being designed to run with Codex. Copilot versions and a standalone server will come later. 
 
 ## What this extension does
 - Runs a local HTTP MCP server at `http://127.0.0.1:3098/mcp` inside the VS Code Extension Host.
@@ -31,6 +32,22 @@ Key files:
 5. Connect an MCP client to `http://127.0.0.1:3098/mcp`.
 
 > Note: the MCP server runs **inside** the Extension Host. If your EDH is remote (WSL/SSH/Dev Container), curl the endpoint from that environment or forward the port.
+
+## Usage in Vscode with Codex
+1. Clone repo
+2. Run `npm install` 
+3. Run `npm run vsce:package` to build the .vsix file. 
+4. In Vscode, navigate to the extensions tab, and click on the ellipsis at the top right corner and click 'Install from VSIX'
+5. Select the generated file and install it. 
+6. In the codex config.toml file, add a section for the mcp server like below to register the mcp server
+    ```toml
+        [mcp_server.vscode_xdebug_mcp]
+        url = "127.0.0.1:3098"
+    ```
+7. Reload vscode
+8. Open a codex chat window and verify the running MCP servers. Alternatively, you can verify that it's running by curling the URL address. 
+9. Start a php debug session in vscode and set a breakpoint. Then ask the codex agent to access the call frame or variables in the execution scope. 
+
 
 ## MCP tools (overview)
 Core inspection:
