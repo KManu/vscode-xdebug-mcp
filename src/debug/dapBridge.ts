@@ -1,3 +1,4 @@
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 
 // Thin DAP bridge for MCP tools; keeps session selection and request shapes centralized.
@@ -58,6 +59,9 @@ export interface DebugStatus {
 
 // Cache sessions because @types/vscode does not expose a session list in all versions.
 const sessionRegistry = new Map<string, vscode.DebugSession>();
+// Track MCP-managed breakpoints so we only remove what we added.
+const mcpFileBreakpoints = new Map<string, vscode.SourceBreakpoint[]>();
+let mcpFunctionBreakpoints: vscode.FunctionBreakpoint[] = [];
 
 function trackSession(session: vscode.DebugSession): void {
   sessionRegistry.set(session.id, session);
@@ -70,6 +74,71 @@ function describeSession(session: vscode.DebugSession): DebugSessionInfo {
     type: session.type,
     workspaceFolder: session.workspaceFolder?.uri.fsPath
   };
+}
+
+function getSessionIfAvailable(sessionId?: string): vscode.DebugSession | undefined {
+  if (sessionId) {
+    return sessionRegistry.get(sessionId);
+  }
+  return vscode.debug.activeDebugSession;
+}
+
+function isWindowsDrivePath(value: string): boolean {
+  return /^[a-zA-Z]:[\\/]/.test(value);
+}
+
+function looksLikeUri(value: string): boolean {
+  return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value);
+}
+
+async function fileExists(uri: vscode.Uri): Promise<boolean> {
+  try {
+    await vscode.workspace.fs.stat(uri);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveFileUri(file: string, sessionId?: string): Promise<vscode.Uri> {
+  const trimmed = file.trim();
+  if (!trimmed) {
+    throw new Error('file path must be provided');
+  }
+
+  if (looksLikeUri(trimmed)) {
+    return vscode.Uri.parse(trimmed);
+  }
+
+  if (isWindowsDrivePath(trimmed) || path.isAbsolute(trimmed)) {
+    return vscode.Uri.file(trimmed);
+  }
+
+  const candidateFolders: vscode.WorkspaceFolder[] = [];
+  const session = getSessionIfAvailable(sessionId);
+  if (session?.workspaceFolder) {
+    candidateFolders.push(session.workspaceFolder);
+  }
+  const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+  for (const folder of workspaceFolders) {
+    if (!candidateFolders.some(candidate => candidate.uri.toString() === folder.uri.toString())) {
+      candidateFolders.push(folder);
+    }
+  }
+
+  if (candidateFolders.length === 0) {
+    // Fall back to resolving against the extension host cwd if no workspace is open.
+    return vscode.Uri.file(path.resolve(trimmed));
+  }
+
+  for (const folder of candidateFolders) {
+    const candidate = vscode.Uri.joinPath(folder.uri, trimmed);
+    if (await fileExists(candidate)) {
+      return candidate;
+    }
+  }
+
+  return vscode.Uri.joinPath(candidateFolders[0].uri, trimmed);
 }
 
 // Register debug session lifecycle listeners tied to the extension's subscriptions.
@@ -254,13 +323,29 @@ export async function setFileBreakpoints(options: {
   breakpoints: SourceBreakpoint[];
   sourceModified?: boolean;
 }): Promise<BreakpointUpdate[]> {
-  const session = getSession(options.sessionId);
-  const response = (await session.customRequest('setBreakpoints', {
-    source: { path: options.file },
-    breakpoints: options.breakpoints,
-    sourceModified: options.sourceModified ?? false
-  })) as { breakpoints?: BreakpointUpdate[] };
-  return Array.isArray(response?.breakpoints) ? response.breakpoints : [];
+  const uri = await resolveFileUri(options.file, options.sessionId);
+  const key = uri.toString();
+
+  const existing = mcpFileBreakpoints.get(key);
+  if (existing && existing.length > 0) {
+    vscode.debug.removeBreakpoints(existing);
+  }
+
+  const sourceBreakpoints = options.breakpoints.map(breakpoint => {
+    const line = Math.max(1, Math.trunc(breakpoint.line));
+    const position = new vscode.Position(line - 1, 0);
+    const location = new vscode.Location(uri, position);
+    return new vscode.SourceBreakpoint(location, true, breakpoint.condition, breakpoint.hitCondition, breakpoint.logMessage);
+  });
+
+  if (sourceBreakpoints.length > 0) {
+    vscode.debug.addBreakpoints(sourceBreakpoints);
+    mcpFileBreakpoints.set(key, sourceBreakpoints);
+  } else {
+    mcpFileBreakpoints.delete(key);
+  }
+
+  return sourceBreakpoints.map(() => ({ verified: true }));
 }
 
 // Function breakpoints are keyed by function name.
@@ -268,11 +353,20 @@ export async function setFunctionBreakpoints(options: {
   sessionId?: string;
   breakpoints: FunctionBreakpoint[];
 }): Promise<BreakpointUpdate[]> {
-  const session = getSession(options.sessionId);
-  const response = (await session.customRequest('setFunctionBreakpoints', {
-    breakpoints: options.breakpoints
-  })) as { breakpoints?: BreakpointUpdate[] };
-  return Array.isArray(response?.breakpoints) ? response.breakpoints : [];
+  if (mcpFunctionBreakpoints.length > 0) {
+    vscode.debug.removeBreakpoints(mcpFunctionBreakpoints);
+  }
+
+  const functionBreakpoints = options.breakpoints.map(breakpoint => {
+    return new vscode.FunctionBreakpoint(breakpoint.name, true, breakpoint.condition, breakpoint.hitCondition);
+  });
+
+  if (functionBreakpoints.length > 0) {
+    vscode.debug.addBreakpoints(functionBreakpoints);
+  }
+
+  mcpFunctionBreakpoints = functionBreakpoints;
+  return functionBreakpoints.map(() => ({ verified: true }));
 }
 
 // Exception filters are adapter-specific and depend on Xdebug capabilities.
