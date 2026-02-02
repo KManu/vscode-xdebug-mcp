@@ -41,26 +41,40 @@ export function makeServer(options: { version?: string } = {}): McpServer {
     }
   );
 
+  const resourceTemplates: Array<{
+    name: string;
+    uriTemplate: string;
+    title: string;
+    description: string;
+  }> = [];
+
   // Resources are read-only views for the currently active debug session.
   server.registerResource(
     'Call Stack',
-    new ResourceTemplate('xdebug://stack', { list: undefined }),
+    'xdebug://stack',
     {
       title: 'Call Stack',
       description: 'Active call stack frames (thread 1)'
     },
-    async () => {
+    async uri => {
       const frames = await dap.stack({ threadId: 1 });
       return {
         contents: [
           {
-            uri: 'xdebug://stack',
+            uri: uri.href,
             text: JSON.stringify(frames, null, 2)
           }
         ]
       };
     }
   );
+
+  resourceTemplates.push({
+    name: 'Frame Variables',
+    uriTemplate: 'xdebug://variables/{frameId}',
+    title: 'Variables',
+    description: 'Variables in a frame (first scope)'
+  });
 
   server.registerResource(
     'Frame Variables',
@@ -88,6 +102,44 @@ export function makeServer(options: { version?: string } = {}): McpServer {
         ]
       };
     }
+  );
+
+  server.registerTool(
+    'list_resource_templates',
+    {
+      title: 'List Resource Templates',
+      description: 'List resource templates exposed by this MCP server',
+      inputSchema: {}
+    },
+    async (): Promise<CallToolResult & { structuredContent: unknown }> => {
+      return structuredResult({ templates: resourceTemplates });
+    }
+  );
+
+  server.registerPrompt(
+    'xdebug_mcp_capabilities',
+    {
+      title: 'Xdebug MCP Capabilities',
+      description: 'Discover tools/resources and how to use this Xdebug MCP server'
+    },
+    () => ({
+      messages: [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text:
+              'You are connected to the Xdebug MCP server inside VS Code. ' +
+              'Please discover and summarize all available capabilities for the user. ' +
+              'First list available tools, then list resources, and then list resource templates (if resources is empty). ' +
+              "Use the tool 'list_resource_templates' if resource templates are not visible via standard MCP listing. " +
+              "Call 'list_sessions' and 'status' to explain session requirements. " +
+              "Mention that most inspection calls require the debug session to be stopped. " +
+              "Show how to read 'xdebug://stack' and 'xdebug://variables/{frameId}', and explain how to set breakpoints/logpoints with workspace-relative or absolute local paths."
+          }
+        }
+      ]
+    })
   );
 
   // Session discovery and status reporting.
@@ -364,7 +416,7 @@ export function makeServer(options: { version?: string } = {}): McpServer {
     'set_breakpoint',
     {
       title: 'Set Breakpoint',
-      description: 'Set file breakpoints with optional condition/hitCondition/logMessage',
+      description: 'Set file breakpoints (workspace-relative or absolute local paths) with optional condition/hitCondition/logMessage',
       inputSchema: {
         sessionId: sessionIdSchema,
         file: z.string(),
@@ -387,6 +439,50 @@ export function makeServer(options: { version?: string } = {}): McpServer {
       }
     },
     async ({ sessionId, file, breakpoints }): Promise<CallToolResult & { structuredContent: unknown }> => {
+      const result = await dap.setFileBreakpoints({ sessionId, file, breakpoints });
+      const structuredContent = {
+        results: result.map(item => ({
+          verified: !!item.verified,
+          message: item.message
+        }))
+      };
+      return structuredResult(structuredContent);
+    }
+  );
+
+  server.registerTool(
+    'set_logpoint',
+    {
+      title: 'Set Logpoint',
+      description: 'Set file logpoints (logMessage) with optional condition/hitCondition',
+      inputSchema: {
+        sessionId: sessionIdSchema,
+        file: z.string(),
+        logpoints: z.array(
+          z.object({
+            line: z.number().int().positive(),
+            logMessage: z.string().min(1),
+            condition: z.string().optional(),
+            hitCondition: z.string().optional()
+          })
+        )
+      },
+      outputSchema: {
+        results: z.array(
+          z.object({
+            verified: z.boolean(),
+            message: z.string().optional()
+          })
+        )
+      }
+    },
+    async ({ sessionId, file, logpoints }): Promise<CallToolResult & { structuredContent: unknown }> => {
+      const breakpoints = logpoints.map(item => ({
+        line: item.line,
+        logMessage: item.logMessage,
+        condition: item.condition,
+        hitCondition: item.hitCondition
+      }));
       const result = await dap.setFileBreakpoints({ sessionId, file, breakpoints });
       const structuredContent = {
         results: result.map(item => ({
