@@ -3,13 +3,19 @@
   "displayName": "Xdebug MCP",
   "publisher": "KwabenaManu",
   "version": "0.0.3",
-  "description": "Expose Xdebug controls to MCP-aware VS Code agents.",
+  "description": "Expose Xdebug controls to MCP-aware VS Code agents for improved PHP debugging.",
+  "icon": "./images/vscode_xdebug_mcp_icon.png",
+  "pricing": "Free",
+  "preview": true,
   "main": "./dist/extension.js",
   "engines": {
     "vscode": "^1.105.0"
   },
   "activationEvents": [
     "onStartupFinished"
+  ],
+  "extensionKind": [
+    "workspace"
   ],
   "scripts": {
     "check-types": "tsc --noEmit --project tsconfig.json",
@@ -26,6 +32,7 @@
     "mcp",
     "debug"
   ],
+  "categories": ["Other", "Debuggers"],
   "author": "Kwabena Manu",
   "repository": {
     "type": "git",
