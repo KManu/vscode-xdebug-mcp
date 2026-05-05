@@ -4,7 +4,7 @@ import { makeServer } from './server';
 
 // We bind locally so only the current machine can reach the MCP server.
 const HOST = '127.0.0.1';
-const PORT = 3098;
+const DEFAULT_PORT = 3098;
 // Guard against large JSON-RPC payloads from accidental dumps.
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
@@ -19,7 +19,7 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
 
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     // Only a single MCP endpoint is exposed; keep the surface area tight.
-    const url = new URL(req.url ?? '/', `http://${HOST}:${PORT}`);
+    const url = new URL(req.url ?? '/', `http://${HOST}:${DEFAULT_PORT}`);
     if (url.pathname !== '/mcp') {
       res.statusCode = 404;
       res.end();
@@ -152,16 +152,25 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
   });
 
   serverUriPromise = new Promise<string>((resolve, reject) => {
-    // Start listening once; resolves with the MCP endpoint URL.
-    httpServer.listen(PORT, HOST, () => {
-      resolve(`http://${HOST}:${PORT}/mcp`);
+    // Try default port first; fall back to port 0 (OS-assigned) on EADDRINUSE.
+    const tryListen = (port: number) => {
+      httpServer.listen(port, HOST, () => {
+        const actualPort = (httpServer.address() as { port: number }).port;
+        resolve(`http://${HOST}:${actualPort}/mcp`);
+      });
+    };
+
+    httpServer.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'EADDRINUSE') {
+        console.log(`Port ${DEFAULT_PORT} in use, falling back to dynamic port allocation`);
+        tryListen(0);
+      } else {
+        serverUriPromise = undefined;
+        reject(err);
+      }
     });
 
-    httpServer.once('error', (err: Error) => {
-      serverUriPromise = undefined;
-      reject(err);
-    });
-
+    tryListen(DEFAULT_PORT);
     runningServer = httpServer;
   });
 
