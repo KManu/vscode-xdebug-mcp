@@ -7,16 +7,19 @@ import * as dap from '../debug/dapBridge';
 const sessionIdSchema = z.string().min(1).optional();
 
 // Convenience helpers for the MCP SDK response shape.
-function okResult(): CallToolResult {
-  return { content: [{ type: 'text', text: 'ok' }] };
+function okResult(): CallToolResult & { structuredContent: Record<string, unknown> } {
+  return {
+    content: [{ type: 'text', text: 'ok' }],
+    structuredContent: { success: true }
+  };
 }
 
 function structuredResult(
   structuredContent: Record<string, unknown>
 ): CallToolResult & { structuredContent: Record<string, unknown> } {
   return {
-    content: [{ type: 'text', text: JSON.stringify(structuredContent) }],
-    structuredContent
+    content: [{ type: 'text', text: JSON.stringify({ success: true, ...structuredContent }) }],
+    structuredContent: { success: true, ...structuredContent }
   };
 }
 

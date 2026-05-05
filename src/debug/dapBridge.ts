@@ -164,6 +164,29 @@ export function registerSessionTracking(subscriptions: vscode.Disposable[]): voi
   );
 }
 
+// Test helpers - allow tests to populate the session registry directly
+export function __addSessionForTesting(session: vscode.DebugSession): void {
+  trackSession(session);
+}
+
+export function __clearSessionsForTesting(): void {
+  sessionRegistry.clear();
+}
+
+// Test helpers - allow tests to inspect MCP-managed breakpoint state
+export function __getFileBreakpointsForTesting(): Map<string, vscode.SourceBreakpoint[]> {
+  return mcpFileBreakpoints;
+}
+
+export function __getFunctionBreakpointsForTesting(): vscode.FunctionBreakpoint[] {
+  return mcpFunctionBreakpoints;
+}
+
+export function __clearBreakpointsForTesting(): void {
+  mcpFileBreakpoints.clear();
+  mcpFunctionBreakpoints = [];
+}
+
 // Resolve a specific session or fall back to the active session for agent workflows.
 function getSession(sessionId?: string): vscode.DebugSession {
   if (sessionId) {
