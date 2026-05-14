@@ -1,5 +1,7 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { log } from '../utils/logger';
+import { isNotStoppedError } from './errors';
 
 // Thin DAP bridge for MCP tools; keeps session selection and request shapes centralized.
 
@@ -95,8 +97,12 @@ async function fileExists(uri: vscode.Uri): Promise<boolean> {
   try {
     await vscode.workspace.fs.stat(uri);
     return true;
-  } catch {
-    return false;
+  } catch (error: any) {
+    // Only treat "file not found" as false; re-throw permission/IO errors.
+    if (error?.code === 'FileNotFound' || error?.code === 'ENOENT') {
+      return false;
+    }
+    throw error;
   }
 }
 
@@ -182,6 +188,10 @@ export function __getFunctionBreakpointsForTesting(): vscode.FunctionBreakpoint[
   return mcpFunctionBreakpoints;
 }
 
+export function getSessionCount(): number {
+  return sessionRegistry.size;
+}
+
 export function __clearBreakpointsForTesting(): void {
   mcpFileBreakpoints.clear();
   mcpFunctionBreakpoints = [];
@@ -204,22 +214,12 @@ function getSession(sessionId?: string): vscode.DebugSession {
   return session;
 }
 
-// DAP signals "notStopped" when requesting stack data during execution.
-function isNotStoppedError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  if (message.includes('notStopped')) {
-    return true;
-  }
-
-  const errorWithBody = error as { body?: { error?: { id?: string } } };
-  return errorWithBody?.body?.error?.id === 'notStopped';
-}
-
 async function safeThreads(session: vscode.DebugSession): Promise<ThreadInfo[]> {
   try {
     const response = (await session.customRequest('threads')) as { threads?: ThreadInfo[] };
     return Array.isArray(response?.threads) ? response.threads : [];
-  } catch {
+  } catch (error) {
+    log.error(`Failed to get threads: ${error instanceof Error ? error.message : String(error)}`);
     return [];
   }
 }
@@ -273,19 +273,33 @@ export async function stack(options: {
   levels?: number;
 } = {}): Promise<StackFrame[]> {
   const session = getSession(options.sessionId);
-  const response = (await session.customRequest('stackTrace', {
-    threadId: options.threadId ?? 1,
-    startFrame: options.startFrame ?? 0,
-    levels: options.levels
-  })) as { stackFrames?: StackFrame[] };
-  return Array.isArray(response?.stackFrames) ? response.stackFrames : [];
+  try {
+    const response = (await session.customRequest('stackTrace', {
+      threadId: options.threadId ?? 1,
+      startFrame: options.startFrame ?? 0,
+      levels: options.levels
+    })) as { stackFrames?: StackFrame[] };
+    return Array.isArray(response?.stackFrames) ? response.stackFrames : [];
+  } catch (error) {
+    if (isNotStoppedError(error)) {
+      throw new Error('Debug session is not stopped. Call wait_for_stop to block until a breakpoint is hit, or pause to interrupt execution.');
+    }
+    throw error;
+  }
 }
 
 // Scope list for a single frame.
 export async function scopes(frameId: number, sessionId?: string): Promise<Scope[]> {
   const session = getSession(sessionId);
-  const response = (await session.customRequest('scopes', { frameId })) as { scopes?: Scope[] };
-  return Array.isArray(response?.scopes) ? response.scopes : [];
+  try {
+    const response = (await session.customRequest('scopes', { frameId })) as { scopes?: Scope[] };
+    return Array.isArray(response?.scopes) ? response.scopes : [];
+  } catch (error) {
+    if (isNotStoppedError(error)) {
+      throw new Error('Debug session is not stopped. Call wait_for_stop to block until a breakpoint is hit, or pause to interrupt execution.');
+    }
+    throw error;
+  }
 }
 
 // Variable list request with optional paging and filters.
@@ -297,13 +311,20 @@ export async function variables(options: {
   filter?: 'indexed' | 'named';
 }): Promise<Variable[]> {
   const session = getSession(options.sessionId);
-  const response = (await session.customRequest('variables', {
-    variablesReference: options.variablesReference,
-    start: options.start,
-    count: options.count,
-    filter: options.filter
-  })) as { variables?: Variable[] };
-  return Array.isArray(response?.variables) ? response.variables : [];
+  try {
+    const response = (await session.customRequest('variables', {
+      variablesReference: options.variablesReference,
+      start: options.start,
+      count: options.count,
+      filter: options.filter
+    })) as { variables?: Variable[] };
+    return Array.isArray(response?.variables) ? response.variables : [];
+  } catch (error) {
+    if (isNotStoppedError(error)) {
+      throw new Error('Debug session is not stopped. Call wait_for_stop to block until a breakpoint is hit, or pause to interrupt execution.');
+    }
+    throw error;
+  }
 }
 
 // Expression evaluation in a specific frame.
@@ -314,11 +335,18 @@ export async function evaluate(options: {
   context?: 'watch' | 'repl' | 'hover' | 'clipboard';
 }): Promise<EvaluateResult> {
   const session = getSession(options.sessionId);
-  return (await session.customRequest('evaluate', {
-    expression: options.expression,
-    frameId: options.frameId,
-    context: options.context
-  })) as EvaluateResult;
+  try {
+    return (await session.customRequest('evaluate', {
+      expression: options.expression,
+      frameId: options.frameId,
+      context: options.context
+    })) as EvaluateResult;
+  } catch (error) {
+    if (isNotStoppedError(error)) {
+      throw new Error('Debug session is not stopped. Call wait_for_stop to block until a breakpoint is hit, or pause to interrupt execution.');
+    }
+    throw error;
+  }
 }
 
 export type SourceBreakpoint = {
@@ -432,8 +460,8 @@ export async function pause(options: { sessionId?: string; threadId?: number } =
   await session.customRequest('pause', { threadId: options.threadId ?? 1 });
 }
 
-export async function restart(sessionId?: string): Promise<void> {
-  const session = getSession(sessionId);
+export async function restart(options: { sessionId?: string } = {}): Promise<void> {
+  const session = getSession(options.sessionId);
   await session.customRequest('restart');
 }
 
