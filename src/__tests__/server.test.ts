@@ -1,76 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { z } from 'zod';
 
-// Mock vscode module
-vi.mock('vscode', () => {
-  return {
-    debug: {
-      activeDebugSession: undefined as any,
-      onDidStartDebugSession: vi.fn(),
-      onDidTerminateDebugSession: vi.fn(),
-      onDidChangeActiveDebugSession: vi.fn(),
-      addBreakpoints: vi.fn(),
-      removeBreakpoints: vi.fn(),
-    },
-    workspace: {
-      workspaceFolders: undefined as unknown as vscode.WorkspaceFolder[],
-      fs: {
-        stat: vi.fn().mockResolvedValue({}),
-      },
-    },
-    Uri: {
-      file: vi.fn().mockImplementation((filePath: string) => ({
-        fsPath: filePath,
-        toString: () => `file://${filePath}`,
-        path: filePath,
-        scheme: 'file',
-        authority: '',
-        query: '',
-        fragment: '',
-        with: vi.fn(),
-        parse: vi.fn(),
-        joinPath: vi.fn(),
-      })),
-      parse: vi.fn().mockImplementation((value: string) => ({
-        fsPath: value,
-        toString: () => value,
-        path: value,
-        scheme: value.startsWith('file://') ? 'file' : 'http',
-        authority: '',
-        query: '',
-        fragment: '',
-        with: vi.fn(),
-        parse: vi.fn(),
-        joinPath: vi.fn(),
-      })),
-      joinPath: vi.fn().mockImplementation((uri: any, ...segments: string[]) => ({
-        fsPath: `${uri.fsPath}/${segments.join('/')}`,
-        toString: () => `file://${uri.fsPath}/${segments.join('/')}`,
-        path: `${uri.fsPath}/${segments.join('/')}`,
-        scheme: 'file',
-        authority: '',
-        query: '',
-        fragment: '',
-        with: vi.fn(),
-      })),
-    },
-    Position: vi.fn().mockImplementation((line: number, character: number) => ({ line, character })),
-    Location: vi.fn().mockImplementation((uri: any, position: any) => ({ uri, range: { start: position, end: position } })),
-    SourceBreakpoint: vi.fn().mockImplementation((location: any, enabled?: boolean, condition?: string, hitCondition?: string, logMessage?: string) => ({
-      location,
-      enabled: enabled ?? true,
-      condition,
-      hitCondition,
-      logMessage,
-    })),
-    FunctionBreakpoint: vi.fn().mockImplementation((name: string, enabled?: boolean, condition?: string, hitCondition?: string) => ({
-      name,
-      enabled: enabled ?? true,
-      condition,
-      hitCondition,
-    })),
-  };
-});
+// vscode mock is configured globally in src/__tests__/setup.ts
 
 // Mock DAP bridge - we only test schema validation, not DAP behavior
 vi.mock('../debug/dapBridge', () => ({
@@ -101,19 +32,6 @@ vi.mock('../debug/dapBridge', () => ({
 import { makeServer } from '../mcp/server';
 import * as dapBridge from '../debug/dapBridge';
 import * as vscode from 'vscode';
-
-// Helper to create mock session
-function createMockSession(id: string, name: string = 'Test Session', type: string = 'php') {
-  return {
-    id,
-    name,
-    type,
-    workspaceFolder: undefined,
-    customRequest: vi.fn().mockResolvedValue({}),
-    configuration: {},
-    getDebugProtocolBreakpoint: vi.fn(),
-  } as unknown as vscode.DebugSession;
-}
 
 describe('server tool schema validation', () => {
   beforeEach(() => {
@@ -1474,6 +1392,260 @@ describe('server tool structuredContent verification', () => {
       expect(result.structuredContent.success).toBe(true);
       expect(result.structuredContent.templates).toBeDefined();
       expect(Array.isArray(result.structuredContent.templates)).toBe(true);
+    });
+  });
+
+  describe('wait_for_stop error propagation', () => {
+    it('should propagate non-notStopped errors rather than retrying', async () => {
+      // Mock dap.stack to throw a non-notStopped error (e.g., network error)
+      (dapBridge.stack as any).mockRejectedValueOnce(new Error('Network error: connection refused'));
+
+      // Mock setTimeout to advance immediately
+      vi.spyOn(global, 'setTimeout').mockImplementation((fn: any) => {
+        fn();
+        return 0 as any;
+      });
+
+      const server = makeServer({ version: '0.0.1' });
+
+      // wait_for_stop errors are now caught by safeHandler and returned as structured error results
+      const result = await callTool(server, 'wait_for_stop', { pollMs: 10 });
+      expect(result.structuredContent).toBeDefined();
+      expect(result.structuredContent.success).toBe(false);
+      expect(result.structuredContent.error).toContain('Network error');
+    });
+
+    it('should return structured error for non-notStopped errors with body.error.id set to something else', async () => {
+      const error = new Error('Some unexpected DAP error');
+      (error as any).body = { error: { id: 'other_error' } };
+      (dapBridge.stack as any).mockRejectedValueOnce(error);
+
+      vi.spyOn(global, 'setTimeout').mockImplementation((fn: any) => {
+        fn();
+        return 0 as any;
+      });
+
+      const server = makeServer({ version: '0.0.1' });
+
+      const result = await callTool(server, 'wait_for_stop', { pollMs: 10 });
+      expect(result.structuredContent).toBeDefined();
+      expect(result.structuredContent.success).toBe(false);
+      expect(result.structuredContent.error).toContain('Some unexpected DAP error');
+    });
+  });
+});
+
+describe('server resource handlers', () => {
+  beforeEach(() => {
+    dapBridge.__clearSessionsForTesting();
+    vscode.debug.activeDebugSession = undefined;
+    vi.clearAllMocks();
+  });
+
+  // Helper to get a registered static resource's readCallback
+  function getStaticResourceCallback(
+    server: ReturnType<typeof makeServer>,
+    resourceUri: string
+  ): ((uri: URL, extra: any) => Promise<any>) | undefined {
+    const resources = (server as any)._registeredResources as Record<string, any>;
+    return resources?.[resourceUri]?.readCallback;
+  }
+
+  // Helper to get a registered resource template's readCallback
+  function getResourceTemplateCallback(
+    server: ReturnType<typeof makeServer>,
+    templateName: string
+  ): ((uri: URL, variables: Record<string, string>, extra: any) => Promise<any>) | undefined {
+    const templates = (server as any)._registeredResourceTemplates as Record<string, any>;
+    return templates?.[templateName]?.readCallback;
+  }
+
+  describe('Resource: xdebug://stack', () => {
+    it('should resolve and return stack frames when session has frames', async () => {
+      const mockFrames = [
+        { id: 1, name: 'main', line: 10, source: { name: 'index.php', path: '/var/www/index.php' } },
+        { id: 2, name: 'helper', line: 25, source: { name: 'helper.php', path: '/var/www/helper.php' } }
+      ];
+      (dapBridge.stack as any).mockResolvedValueOnce(mockFrames);
+
+      const server = makeServer({ version: '0.0.1' });
+      const callback = getStaticResourceCallback(server, 'xdebug://stack');
+      expect(callback).toBeDefined();
+
+      const uri = new URL('xdebug://stack');
+      const result = await callback!(uri, {});
+
+      expect(result).toBeDefined();
+      expect(result.contents).toBeDefined();
+      expect(result.contents).toHaveLength(1);
+      expect(result.contents[0].uri).toBe('xdebug://stack');
+      const parsed = JSON.parse(result.contents[0].text);
+      expect(parsed).toEqual(mockFrames);
+      expect(dapBridge.stack).toHaveBeenCalledWith({ threadId: 1 });
+    });
+
+    it('should return empty array when no frames are available', async () => {
+      (dapBridge.stack as any).mockResolvedValueOnce([]);
+
+      const server = makeServer({ version: '0.0.1' });
+      const callback = getStaticResourceCallback(server, 'xdebug://stack');
+      expect(callback).toBeDefined();
+
+      const uri = new URL('xdebug://stack');
+      const result = await callback!(uri, {});
+
+      expect(result.contents).toHaveLength(1);
+      const parsed = JSON.parse(result.contents[0].text);
+      expect(parsed).toEqual([]);
+    });
+  });
+
+  describe('Resource: xdebug://variables/{frameId}', () => {
+    it('should return variables for a valid frameId', async () => {
+      const mockScopes = [
+        { name: 'Local', variablesReference: 100, expensive: false }
+      ];
+      const mockVariables = [
+        { name: '$x', value: '42', type: 'int', variablesReference: 0 },
+        { name: '$y', value: '"hello"', type: 'string', variablesReference: 0 }
+      ];
+      (dapBridge.scopes as any).mockResolvedValueOnce(mockScopes);
+      (dapBridge.variables as any).mockResolvedValueOnce(mockVariables);
+
+      const server = makeServer({ version: '0.0.1' });
+      const callback = getResourceTemplateCallback(server, 'Frame Variables');
+      expect(callback).toBeDefined();
+
+      const uri = new URL('xdebug://variables/1');
+      const result = await callback!(uri, { frameId: '1' }, {});
+
+      expect(result).toBeDefined();
+      expect(result.contents).toHaveLength(1);
+      const parsed = JSON.parse(result.contents[0].text);
+      expect(parsed).toEqual(mockVariables);
+      expect(dapBridge.scopes).toHaveBeenCalledWith(1);
+      expect(dapBridge.variables).toHaveBeenCalledWith({ variablesReference: 100 });
+    });
+
+    it('should throw for non-numeric frameId', async () => {
+      const server = makeServer({ version: '0.0.1' });
+      const callback = getResourceTemplateCallback(server, 'Frame Variables');
+      expect(callback).toBeDefined();
+
+      const uri = new URL('xdebug://variables/abc');
+      await expect(callback!(uri, { frameId: 'abc' }, {})).rejects.toThrow('frameId must be a number');
+    });
+
+    it('should throw for undefined frameId', async () => {
+      const server = makeServer({ version: '0.0.1' });
+      const callback = getResourceTemplateCallback(server, 'Frame Variables');
+      expect(callback).toBeDefined();
+
+      const uri = new URL('xdebug://variables/');
+      await expect(callback!(uri, {}, {})).rejects.toThrow('frameId must be a number');
+    });
+
+    it('should return empty variables when frame has no scopes', async () => {
+      (dapBridge.scopes as any).mockResolvedValueOnce([]);
+
+      const server = makeServer({ version: '0.0.1' });
+      const callback = getResourceTemplateCallback(server, 'Frame Variables');
+      expect(callback).toBeDefined();
+
+      const uri = new URL('xdebug://variables/5');
+      const result = await callback!(uri, { frameId: '5' }, {});
+
+      expect(result.contents).toHaveLength(1);
+      const parsed = JSON.parse(result.contents[0].text);
+      expect(parsed).toEqual([]);
+      // variables should not be called when there are no scopes
+      expect(dapBridge.variables).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('server tool outputSchema verification', () => {
+  beforeEach(() => {
+    dapBridge.__clearSessionsForTesting();
+    vscode.debug.activeDebugSession = undefined;
+    vi.clearAllMocks();
+  });
+
+  function getRegisteredTool(server: ReturnType<typeof makeServer>, toolName: string): any {
+    const tools = (server as any)._registeredTools as Record<string, any>;
+    return tools?.[toolName];
+  }
+
+  describe('set_breakpoint outputSchema', () => {
+    it('should have outputSchema with results array of verified/message objects', () => {
+      const server = makeServer({ version: '0.0.1' });
+      const tool = getRegisteredTool(server, 'set_breakpoint');
+
+      expect(tool).toBeDefined();
+      expect(tool.outputSchema).toBeDefined();
+
+      // Verify the schema structure by parsing valid data
+      const schema = tool.outputSchema;
+      const validResult = { results: [{ verified: true, message: 'ok' }] };
+      const parsed = schema.safeParse(validResult);
+      expect(parsed.success).toBe(true);
+    });
+
+    it('should reject output without results array', () => {
+      const server = makeServer({ version: '0.0.1' });
+      const tool = getRegisteredTool(server, 'set_breakpoint');
+
+      const schema = tool.outputSchema;
+      const parsed = schema.safeParse({ something: 'else' });
+      expect(parsed.success).toBe(false);
+    });
+
+    it('should reject output with invalid results item (missing verified)', () => {
+      const server = makeServer({ version: '0.0.1' });
+      const tool = getRegisteredTool(server, 'set_breakpoint');
+
+      const schema = tool.outputSchema;
+      const parsed = schema.safeParse({ results: [{ message: 'no verified field' }] });
+      expect(parsed.success).toBe(false);
+    });
+  });
+
+  describe('set_logpoint outputSchema', () => {
+    it('should have outputSchema with results array of verified/message objects', () => {
+      const server = makeServer({ version: '0.0.1' });
+      const tool = getRegisteredTool(server, 'set_logpoint');
+
+      expect(tool).toBeDefined();
+      expect(tool.outputSchema).toBeDefined();
+
+      const schema = tool.outputSchema;
+      const validResult = { results: [{ verified: true }] };
+      const parsed = schema.safeParse(validResult);
+      expect(parsed.success).toBe(true);
+    });
+
+    it('should reject output without results array', () => {
+      const server = makeServer({ version: '0.0.1' });
+      const tool = getRegisteredTool(server, 'set_logpoint');
+
+      const schema = tool.outputSchema;
+      const parsed = schema.safeParse({ results: 'not-an-array' });
+      expect(parsed.success).toBe(false);
+    });
+  });
+
+  describe('tools without outputSchema', () => {
+    it('should not have outputSchema for tools that dont define one', () => {
+      const server = makeServer({ version: '0.0.1' });
+
+      // Tools that should NOT have outputSchema
+      const toolsWithoutOutputSchema = ['stack', 'continue', 'pause', 'step_over', 'set_function_breakpoints'];
+
+      for (const toolName of toolsWithoutOutputSchema) {
+        const tool = getRegisteredTool(server, toolName);
+        expect(tool).toBeDefined();
+        expect(tool.outputSchema).toBeUndefined();
+      }
     });
   });
 });

@@ -1,6 +1,7 @@
 import * as http from 'node:http';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import { startHttpServer, stopHttpServer } from '../mcp/httpTransport';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 
 vi.mock('../mcp/server', () => ({
   makeServer: vi.fn().mockReturnValue({
@@ -422,5 +423,104 @@ describe('httpTransport MCP protocol integration', () => {
       req.write('{}');
       req.end();
     });
+  });
+});
+
+describe('httpTransport header normalization', () => {
+  // Helper to get the headers that were passed to the latest transport handleRequest call
+  function getLastTransportRequestHeaders(): Record<string, string | string[] | undefined> | undefined {
+    const ctor = StreamableHTTPServerTransport as any;
+    const results = ctor?.mock?.results;
+    if (!results || results.length === 0) return undefined;
+    const lastInstance = results.at(-1)?.value;
+    const handleFn = lastInstance?.handleRequest;
+    if (!handleFn || !handleFn.mock || handleFn.mock.calls.length === 0) return undefined;
+    return handleFn.mock.calls.at(-1)?.[0]?.headers;
+  }
+
+  it('should add Accept header to POST requests without it', async () => {
+    await makeRawRequest(
+      sharedServerUrl,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' } },
+      JSON.stringify({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'threads' }, id: 1 })
+    );
+
+    const headers = getLastTransportRequestHeaders();
+    expect(headers).toBeDefined();
+    expect(headers!.accept).toBe('application/json, text/event-stream');
+  });
+
+  it('should add Accept header to GET requests without it', async () => {
+    await makeRawRequest(
+      sharedServerUrl,
+      { method: 'GET' },
+      null
+    );
+
+    const headers = getLastTransportRequestHeaders();
+    expect(headers).toBeDefined();
+    expect(headers!.accept).toBe('text/event-stream');
+  });
+
+  it('should not override existing Accept header on POST when it contains expected values', async () => {
+    const originalAccept = 'application/json, text/event-stream';
+    await makeRawRequest(
+      sharedServerUrl,
+      { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: originalAccept } },
+      JSON.stringify({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'threads' }, id: 1 })
+    );
+
+    const headers = getLastTransportRequestHeaders();
+    expect(headers).toBeDefined();
+    expect(headers!.accept).toBe(originalAccept);
+  });
+
+  it('should not override existing Accept header on GET when it contains text/event-stream', async () => {
+    const originalAccept = 'text/event-stream';
+    await makeRawRequest(
+      sharedServerUrl,
+      { method: 'GET', headers: { Accept: originalAccept } },
+      null
+    );
+
+    const headers = getLastTransportRequestHeaders();
+    expect(headers).toBeDefined();
+    expect(headers!.accept).toBe(originalAccept);
+  });
+
+  it('should add Content-Type header to POST requests without it', async () => {
+    await makeRawRequest(
+      sharedServerUrl,
+      { method: 'POST', headers: { Accept: 'application/json, text/event-stream' } },
+      JSON.stringify({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'threads' }, id: 1 })
+    );
+
+    const headers = getLastTransportRequestHeaders();
+    expect(headers).toBeDefined();
+    expect(headers!['content-type']).toBe('application/json');
+  });
+
+  it('should not override existing Content-Type header on POST', async () => {
+    await makeRawRequest(
+      sharedServerUrl,
+      { method: 'POST', headers: { 'Content-Type': 'application/vnd.api+json', Accept: 'application/json, text/event-stream' } },
+      JSON.stringify({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'threads' }, id: 1 })
+    );
+
+    const headers = getLastTransportRequestHeaders();
+    expect(headers).toBeDefined();
+    expect(headers!['content-type']).toBe('application/vnd.api+json');
+  });
+
+  it('should not add Content-Type header to GET requests', async () => {
+    await makeRawRequest(
+      sharedServerUrl,
+      { method: 'GET' },
+      null
+    );
+
+    const headers = getLastTransportRequestHeaders();
+    expect(headers).toBeDefined();
+    expect(headers!['content-type']).toBeUndefined();
   });
 });
