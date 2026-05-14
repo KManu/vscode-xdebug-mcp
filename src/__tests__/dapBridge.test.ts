@@ -1,92 +1,16 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as path from 'node:path';
+import { createMockDebugSession, createMockWorkspaceFolder } from './mockVscode';
 
-// Mock vscode module
-vi.mock('vscode', () => {
-  return {
-    debug: {
-      activeDebugSession: undefined as any,
-      onDidStartDebugSession: vi.fn(),
-      onDidTerminateDebugSession: vi.fn(),
-      onDidChangeActiveDebugSession: vi.fn(),
-      addBreakpoints: vi.fn(),
-      removeBreakpoints: vi.fn(),
-    },
-    workspace: {
-      workspaceFolders: undefined as unknown as vscode.WorkspaceFolder[],
-      fs: {
-        stat: vi.fn().mockResolvedValue({}),
-      },
-    },
-    Uri: {
-      file: vi.fn().mockImplementation((filePath: string) => ({
-        fsPath: filePath,
-        toString: () => `file://${filePath}`,
-        path: filePath,
-        scheme: 'file',
-        authority: '',
-        query: '',
-        fragment: '',
-        with: vi.fn(),
-        parse: vi.fn(),
-        joinPath: vi.fn(),
-      })),
-      parse: vi.fn().mockImplementation((value: string) => ({
-        fsPath: value,
-        toString: () => value,
-        path: value,
-        scheme: value.startsWith('file://') ? 'file' : 'http',
-        authority: '',
-        query: '',
-        fragment: '',
-        with: vi.fn(),
-        parse: vi.fn(),
-        joinPath: vi.fn(),
-      })),
-      joinPath: vi.fn().mockImplementation((uri: any, ...segments: string[]) => ({
-        fsPath: `${uri.fsPath}/${segments.join('/')}`,
-        toString: () => `file://${uri.fsPath}/${segments.join('/')}`,
-        path: `${uri.fsPath}/${segments.join('/')}`,
-        scheme: 'file',
-        authority: '',
-        query: '',
-        fragment: '',
-        with: vi.fn(),
-      })),
-    },
-    Position: vi.fn().mockImplementation((line: number, character: number) => ({ line, character })),
-    Location: vi.fn().mockImplementation((uri: any, position: any) => ({ uri, range: { start: position, end: position } })),
-    SourceBreakpoint: vi.fn().mockImplementation((location: any, enabled?: boolean, condition?: string, hitCondition?: string, logMessage?: string) => ({
-      location,
-      enabled: enabled ?? true,
-      condition,
-      hitCondition,
-      logMessage,
-    })),
-    FunctionBreakpoint: vi.fn().mockImplementation((name: string, enabled?: boolean, condition?: string, hitCondition?: string) => ({
-      name,
-      enabled: enabled ?? true,
-      condition,
-      hitCondition,
-    })),
-  };
-});
+// vscode mock is configured globally in src/__tests__/setup.ts
 
 // Import after mocking
 import * as dapBridge from '../debug/dapBridge';
 import * as vscode from 'vscode';
 
-// Shared helper to create mock sessions - defined at describe scope level for reuse
-function createMockSession(id: string, name: string = 'Test Session', type: string = 'php') {
-  return {
-    id,
-    name,
-    type,
-    workspaceFolder: undefined,
-    customRequest: vi.fn().mockResolvedValue({}),
-    configuration: {},
-    getDebugProtocolBreakpoint: vi.fn(),
-  } as unknown as vscode.DebugSession;
+// Type-cast wrapper: MockDebugSession → vscode.DebugSession
+function mockSession(overrides?: Parameters<typeof createMockDebugSession>[0]) {
+  return createMockDebugSession(overrides) as unknown as vscode.DebugSession;
 }
 
 describe('dapBridge error detection (isNotStoppedError)', () => {
@@ -107,7 +31,7 @@ describe('dapBridge error detection (isNotStoppedError)', () => {
 
   // Test case 1: Error message contains "notStopped" -> isNotStoppedError returns true -> status returns stopped:false
   it('should return stopped:false when stackTrace throws error with "notStopped" in message', async () => {
-    const session = createMockSession('session-1');
+    const session = mockSession({ id: 'session-1' });
     session.customRequest = vi.fn().mockImplementation((command: string) => {
       if (command === 'threads') {
         return Promise.resolve({ threads: [{ id: 1, name: 'Thread 1' }] });
@@ -126,7 +50,7 @@ describe('dapBridge error detection (isNotStoppedError)', () => {
 
   // Test case 2: body.error.id === 'notStopped' -> isNotStoppedError returns true -> status returns stopped:false
   it('should return stopped:false when stackTrace throws error with body.error.id === "notStopped"', async () => {
-    const session = createMockSession('session-1');
+    const session = mockSession({ id: 'session-1' });
     session.customRequest = vi.fn().mockImplementation((command: string) => {
       if (command === 'threads') {
         return Promise.resolve({ threads: [{ id: 1, name: 'Thread 1' }] });
@@ -147,7 +71,7 @@ describe('dapBridge error detection (isNotStoppedError)', () => {
 
   // Test case 3: Both message has "notStopped" AND body has the id -> isNotStoppedError returns true
   it('should return stopped:false when error has both "notStopped" in message and body.error.id', async () => {
-    const session = createMockSession('session-1');
+    const session = mockSession({ id: 'session-1' });
     session.customRequest = vi.fn().mockImplementation((command: string) => {
       if (command === 'threads') {
         return Promise.resolve({ threads: [{ id: 1, name: 'Thread 1' }] });
@@ -168,7 +92,7 @@ describe('dapBridge error detection (isNotStoppedError)', () => {
 
   // Test case 4: Other error messages -> isNotStoppedError returns false -> error propagates
   it('should propagate non-notStopped errors from stackTrace', async () => {
-    const session = createMockSession('session-1');
+    const session = mockSession({ id: 'session-1' });
     session.customRequest = vi.fn().mockImplementation((command: string) => {
       if (command === 'threads') {
         return Promise.resolve({ threads: [{ id: 1, name: 'Thread 1' }] });
@@ -186,7 +110,7 @@ describe('dapBridge error detection (isNotStoppedError)', () => {
 
   // Test case 5: Error with no body (but message contains "notStopped") -> isNotStoppedError returns true
   it('should return stopped:false when error message contains "notStopped" but has no body', async () => {
-    const session = createMockSession('session-1');
+    const session = mockSession({ id: 'session-1' });
     session.customRequest = vi.fn().mockImplementation((command: string) => {
       if (command === 'threads') {
         return Promise.resolve({ threads: [{ id: 1, name: 'Thread 1' }] });
@@ -205,7 +129,7 @@ describe('dapBridge error detection (isNotStoppedError)', () => {
 
   // Test case 6: Error with body but no error.id -> isNotStoppedError returns false (unless message matches)
   it('should propagate error when body exists but error.id is missing', async () => {
-    const session = createMockSession('session-1');
+    const session = mockSession({ id: 'session-1' });
     session.customRequest = vi.fn().mockImplementation((command: string) => {
       if (command === 'threads') {
         return Promise.resolve({ threads: [{ id: 1, name: 'Thread 1' }] });
@@ -227,7 +151,7 @@ describe('dapBridge error detection (isNotStoppedError)', () => {
 
   // Test case 7: Error with body.error.id but not "notStopped" -> only body check applies
   it('should return stopped:false when body.error.id is "notStopped" regardless of message', async () => {
-    const session = createMockSession('session-1');
+    const session = mockSession({ id: 'session-1' });
     session.customRequest = vi.fn().mockImplementation((command: string) => {
       if (command === 'threads') {
         return Promise.resolve({ threads: [{ id: 1, name: 'Thread 1' }] });
@@ -258,7 +182,7 @@ describe('dapBridge session resolution', () => {
   describe('getSession', () => {
     // Test case 1: Valid sessionId returns that session from registry
     it('should return session when valid sessionId is provided', async () => {
-      const session = createMockSession('session-1', 'PHP Session 1');
+      const session = mockSession({ id: 'session-1', name: 'PHP Session 1' });
       dapBridge.__addSessionForTesting(session);
 
       const status = await dapBridge.status('session-1');
@@ -273,7 +197,7 @@ describe('dapBridge session resolution', () => {
 
     // Test case 3: No sessionId + active session exists returns active session
     it('should return activeDebugSession when no sessionId provided and active session exists', async () => {
-      const activeSession = createMockSession('active-session', 'Active PHP Session');
+      const activeSession = mockSession({ id: 'active-session', name: 'Active PHP Session' });
       // Add to registry AND set as active
       dapBridge.__addSessionForTesting(activeSession);
       vscode.debug.activeDebugSession = activeSession;
@@ -308,29 +232,10 @@ describe('dapBridge path resolution (resolveFileUri via setFileBreakpoints)', ()
     vi.clearAllMocks();
   });
 
-  function createMockWorkspaceFolder(fsPath: string, uriString?: string) {
-    const uri = {
-      fsPath,
-      toString: () => uriString || `file://${fsPath}`,
-      path: fsPath,
-      scheme: 'file',
-      authority: '',
-      query: '',
-      fragment: '',
-      with: vi.fn(),
-      parse: vi.fn(),
-      joinPath: vi.fn().mockImplementation((...segments: string[]) => ({
-        fsPath: `${fsPath}/${segments.join('/')}`,
-        toString: () => `file://${fsPath}/${segments.join('/')}`,
-      })),
-    };
-    return { uri, name: fsPath.split('/').pop() || fsPath, index: 0 };
-  }
-
   describe('setFileBreakpoints path resolution', () => {
     // Test case 2: Absolute Unix path -> Uri.file() result
     it('should call Uri.file for absolute Unix paths', async () => {
-      const session = createMockSession('session-1');
+      const session = mockSession({ id: 'session-1' });
       dapBridge.__addSessionForTesting(session);
       vscode.debug.activeDebugSession = session;
 
@@ -344,7 +249,7 @@ describe('dapBridge path resolution (resolveFileUri via setFileBreakpoints)', ()
 
     // Test case 3: Windows drive path -> Uri.file() result
     it('should call Uri.file for Windows drive paths', async () => {
-      const session = createMockSession('session-1');
+      const session = mockSession({ id: 'session-1' });
       dapBridge.__addSessionForTesting(session);
       vscode.debug.activeDebugSession = session;
 
@@ -367,7 +272,7 @@ describe('dapBridge path resolution (resolveFileUri via setFileBreakpoints)', ()
         configurable: true
       });
 
-      const session = createMockSession('session-1');
+      const session = mockSession({ id: 'session-1' });
       dapBridge.__addSessionForTesting(session);
       vscode.debug.activeDebugSession = session;
 
@@ -390,7 +295,9 @@ describe('dapBridge path resolution (resolveFileUri via setFileBreakpoints)', ()
         if (uri.fsPath.startsWith('/workspace/project2')) {
           return {};
         }
-        throw new Error('ENOENT');
+        const err = new Error('ENOENT') as any;
+        err.code = 'ENOENT';
+        throw err;
       });
 
       // Use Object.defineProperty to set workspaceFolders (bypasses readonly)
@@ -400,7 +307,7 @@ describe('dapBridge path resolution (resolveFileUri via setFileBreakpoints)', ()
         configurable: true
       });
 
-      const session = createMockSession('session-1');
+      const session = mockSession({ id: 'session-1' });
       dapBridge.__addSessionForTesting(session);
       vscode.debug.activeDebugSession = session;
 
@@ -426,9 +333,11 @@ describe('dapBridge path resolution (resolveFileUri via setFileBreakpoints)', ()
       });
 
       // Mock fs.stat to always fail (file doesn't exist)
-      (vscode.workspace.fs.stat as any).mockRejectedValue(new Error('ENOENT'));
+      const notFoundErr = new Error('ENOENT') as any;
+      notFoundErr.code = 'ENOENT';
+      (vscode.workspace.fs.stat as any).mockRejectedValue(notFoundErr);
 
-      const session = createMockSession('session-1');
+      const session = mockSession({ id: 'session-1' });
       dapBridge.__addSessionForTesting(session);
       vscode.debug.activeDebugSession = session;
 
@@ -443,7 +352,7 @@ describe('dapBridge path resolution (resolveFileUri via setFileBreakpoints)', ()
 
     // Test case 1 variant: URI string input -> Uri.parse() result
     it('should call Uri.parse for URI strings', async () => {
-      const session = createMockSession('session-1');
+      const session = mockSession({ id: 'session-1' });
       dapBridge.__addSessionForTesting(session);
       vscode.debug.activeDebugSession = session;
 
@@ -471,25 +380,6 @@ describe('dapBridge breakpoint lifecycle', () => {
     vi.clearAllMocks();
   });
 
-  function createMockWorkspaceFolder(fsPath: string) {
-    const uri = {
-      fsPath,
-      toString: () => `file://${fsPath}`,
-      path: fsPath,
-      scheme: 'file',
-      authority: '',
-      query: '',
-      fragment: '',
-      with: vi.fn(),
-      parse: vi.fn(),
-      joinPath: vi.fn().mockImplementation((...segments: string[]) => ({
-        fsPath: `${fsPath}/${segments.join('/')}`,
-        toString: () => `file://${fsPath}/${segments.join('/')}`,
-      })),
-    };
-    return { uri, name: fsPath.split('/').pop() || fsPath, index: 0 };
-  }
-
   describe('setFileBreakpoints', () => {
     // 1. Set breakpoints on new file -> added to mcpFileBreakpoints Map
     it('should add breakpoints to mcpFileBreakpoints Map for new file', async () => {
@@ -500,7 +390,7 @@ describe('dapBridge breakpoint lifecycle', () => {
         configurable: true
       });
 
-      const session = createMockSession('session-1');
+      const session = mockSession({ id: 'session-1' });
       dapBridge.__addSessionForTesting(session);
       vscode.debug.activeDebugSession = session;
 
@@ -510,9 +400,6 @@ describe('dapBridge breakpoint lifecycle', () => {
       });
 
       const breakpoints = dapBridge.__getFileBreakpointsForTesting();
-      // The key is the URI toString() value
-      const uri = await dapBridge.setFileBreakpoints as any;
-      // Get the key used - it's the file path turned into a URI
       expect(breakpoints.size).toBe(1);
       const key = Array.from(breakpoints.keys())[0];
       expect(key).toContain('/workspace/project/src/index.php');
@@ -527,7 +414,7 @@ describe('dapBridge breakpoint lifecycle', () => {
         configurable: true
       });
 
-      const session = createMockSession('session-1');
+      const session = mockSession({ id: 'session-1' });
       dapBridge.__addSessionForTesting(session);
       vscode.debug.activeDebugSession = session;
 
@@ -560,7 +447,7 @@ describe('dapBridge breakpoint lifecycle', () => {
         configurable: true
       });
 
-      const session = createMockSession('session-1');
+      const session = mockSession({ id: 'session-1' });
       dapBridge.__addSessionForTesting(session);
       vscode.debug.activeDebugSession = session;
 
@@ -591,7 +478,7 @@ describe('dapBridge breakpoint lifecycle', () => {
         configurable: true
       });
 
-      const session = createMockSession('session-1');
+      const session = mockSession({ id: 'session-1' });
       dapBridge.__addSessionForTesting(session);
       vscode.debug.activeDebugSession = session;
 
@@ -611,7 +498,7 @@ describe('dapBridge breakpoint lifecycle', () => {
   describe('setFunctionBreakpoints', () => {
     // 1. Set function breakpoints -> stored in mcpFunctionBreakpoints array
     it('should store function breakpoints in mcpFunctionBreakpoints array', async () => {
-      const session = createMockSession('session-1');
+      const session = mockSession({ id: 'session-1' });
       dapBridge.__addSessionForTesting(session);
       vscode.debug.activeDebugSession = session;
 
@@ -628,7 +515,7 @@ describe('dapBridge breakpoint lifecycle', () => {
 
     // 2. Replace function breakpoints -> old replaced with new
     it('should replace old function breakpoints when setting new ones', async () => {
-      const session = createMockSession('session-1');
+      const session = mockSession({ id: 'session-1' });
       dapBridge.__addSessionForTesting(session);
       vscode.debug.activeDebugSession = session;
 
@@ -658,7 +545,7 @@ describe('dapBridge breakpoint lifecycle', () => {
   describe('setExceptionBreakpoints', () => {
     // Set exception breakpoints -> forwarded to DAP adapter via session.customRequest
     it('should forward exception breakpoints to DAP adapter via customRequest', async () => {
-      const session = createMockSession('session-1');
+      const session = mockSession({ id: 'session-1' });
       session.customRequest = vi.fn().mockResolvedValue({ breakpoints: [] });
       dapBridge.__addSessionForTesting(session);
       vscode.debug.activeDebugSession = session;

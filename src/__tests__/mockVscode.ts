@@ -10,7 +10,9 @@ export interface MockDebugSession {
   name: string;
   type: string;
   workspaceFolder?: { uri: { fsPath: string } };
-  customRequest: (command: string, args?: unknown) => Promise<unknown>;
+  customRequest: ReturnType<typeof vi.fn>;
+  configuration: Record<string, unknown>;
+  getDebugProtocolBreakpoint: ReturnType<typeof vi.fn>;
 }
 
 export interface MockWorkspaceFolder {
@@ -68,6 +70,8 @@ export function createMockDebugSession(overrides?: Partial<MockDebugSession>): M
     type: 'php',
     workspaceFolder: undefined,
     customRequest: vi.fn().mockResolvedValue({}),
+    configuration: {},
+    getDebugProtocolBreakpoint: vi.fn(),
     ...overrides,
   };
 }
@@ -157,77 +161,6 @@ export function createMockUri(): typeof import('vscode').Uri {
   } as unknown as typeof import('vscode').Uri;
 }
 
-/**
- * Sets up vi.mock for the vscode debug module.
- * Call this in beforeEach or setup file.
- */
-export function mockVscodeDebug(): void {
-  vi.mock('vscode', async () => {
-    const mockUri = createMockUri();
-
-    return {
-      Uri: mockUri,
-      debug: {
-        activeDebugSession: undefined,
-        onDidStartDebugSession: vi.fn(),
-        onDidTerminateDebugSession: vi.fn(),
-        onDidChangeActiveDebugSession: vi.fn(),
-        addBreakpoints: vi.fn(),
-        removeBreakpoints: vi.fn(),
-      },
-      workspace: {
-        workspaceFolders: undefined,
-        fs: {
-          stat: vi.fn().mockResolvedValue({}),
-        },
-      },
-      Position: vi.fn().mockImplementation((line: number, character: number) => ({ line, character })),
-      Location: vi.fn().mockImplementation((uri: MockUri, position: MockPosition) => ({ uri, range: { start: position, end: position } })),
-      SourceBreakpoint: vi.fn().mockImplementation((location: MockLocation, enabled?: boolean, condition?: string, hitCondition?: string, logMessage?: string) => ({
-        location,
-        enabled: enabled ?? true,
-        condition,
-        hitCondition,
-        logMessage,
-      })),
-      FunctionBreakpoint: vi.fn().mockImplementation((name: string, enabled?: boolean, condition?: string, hitCondition?: string) => ({
-        name,
-        enabled: enabled ?? true,
-        condition,
-        hitCondition,
-      })),
-    };
-  });
-}
-
-/**
- * Sets up vi.mock for the vscode workspace module.
- */
-export function mockVscodeWorkspace(): void {
-  vi.mock('vscode', async () => {
-    const mockUri = createMockUri();
-
-    return {
-      Uri: mockUri,
-      workspace: {
-        workspaceFolders: undefined,
-        fs: {
-          stat: vi.fn().mockResolvedValue({}),
-        },
-      },
-    };
-  });
-}
-
-/**
- * Sets up vi.mock for vscode.Uri functions.
- */
-export function mockVscodeUri(): void {
-  vi.mock('vscode', async () => {
-    const mockUri = createMockUri();
-
-    return {
-      Uri: mockUri,
-    };
-  });
-}
+// The vscode module mock is configured globally in src/__tests__/setup.ts.
+// Test files import factory functions (createMockDebugSession, createMockWorkspaceFolder)
+// from here to build mock objects for individual tests.
