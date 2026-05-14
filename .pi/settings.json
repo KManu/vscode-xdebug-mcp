@@ -1,0 +1,16 @@
+{
+  "subagents": {
+    "agentOverrides": {
+      "worker": {
+        "model": "anthropic/claude-sonnet-4",
+        "thinking": "high",
+        "inheritSkills": false
+      },
+      "reviewer": {
+        "model": "anthropic/claude-sonnet-4",
+        "thinking": "high",
+        "inheritSkills": false
+      }
+    }
+  }
+}
