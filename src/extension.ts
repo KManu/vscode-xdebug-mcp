@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { startHttpServer, stopHttpServer } from './mcp/httpTransport';
-import { registerSessionTracking } from './debug/dapBridge';
+import { registerSessionTracking, getSessionCount } from './debug/dapBridge';
+import { log } from './utils/logger';
 
 // VS Code entrypoint. This runs inside the Extension Host process, not your app.
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -12,11 +13,45 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   try {
     // Start the HTTP MCP server early so agents can connect immediately.
     const uri = await startHttpServer({ version: serverVersion });
-    console.log(`Vscode Xdebug MCP server listening at ${uri}`);
+    log.info(`Vscode Xdebug MCP server listening at ${uri}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`Failed to start Vscode Xdebug MCP server: ${message}`);
+    log.error(`Failed to start Vscode Xdebug MCP server: ${message}`);
   }
+
+  // Status bar item — shows Xdebug MCP session count at a glance.
+  const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  statusBarItem.command = 'xdebug-mcp.showDiagnostics';
+  statusBarItem.tooltip = 'Xdebug MCP Server Status';
+  context.subscriptions.push(statusBarItem);
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('xdebug-mcp.showDiagnostics', () => {
+      const count = getSessionCount();
+      vscode.window.showInformationMessage(
+        `Xdebug MCP Server v${serverVersion}\nActive debug sessions: ${count}`
+      );
+    })
+  );
+
+  function updateStatusBar(): void {
+    const count = getSessionCount();
+    if (count > 0) {
+      statusBarItem.text = `$(debug-alt) Xdebug MCP (${count})`;
+      statusBarItem.backgroundColor = undefined;
+    } else {
+      statusBarItem.text = `$(debug-disconnect) Xdebug MCP`;
+      statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+    }
+    statusBarItem.show();
+  }
+
+  updateStatusBar();
+  context.subscriptions.push(
+    vscode.debug.onDidStartDebugSession(() => updateStatusBar()),
+    vscode.debug.onDidTerminateDebugSession(() => updateStatusBar()),
+    vscode.debug.onDidChangeActiveDebugSession(() => updateStatusBar())
+  );
 
   // MCP provider tells VS Code (and agent clients) how to reach this server.
   const definitionsChanged = new vscode.EventEmitter<void>();
