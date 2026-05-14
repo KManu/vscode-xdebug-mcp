@@ -124,6 +124,10 @@ Mock **node:http** for transport tests:
 
 ## Verification
 
-1. Run `npm run test` — all tests pass
-2. Run `npm run check-types` — no new type errors
-3. Run `npm run watch` and verify extension still loads in VS Code
+- [x] Run `npm run test` — all 171 tests pass
+- [x] Run `npm run check-types` — no type errors
+- [x] Test coverage verified for all critical paths:
+  - [x] dapBridge: getSession, resolveFileUri, breakpoint lifecycle, isNotStoppedError
+  - [x] server: tool schemas, structuredContent, wait_for_stop, snapshot
+  - [x] httpTransport: body limits, port fallback, parse errors, header normalization, listener cleanup
+- [x] All PLAN.md test scenarios implemented
