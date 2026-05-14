@@ -53,6 +53,7 @@ LAST_COMPLETED=
 
 ```
 0 → 1a → 1b → 1c → 1d → 2a → 2b → 2c → 3a → 3b → 3c → 4
+3aR → 3bR → 4R
 ```
 
 **Phase 0** — Test infrastructure (vitest config, mockVscode, package.json deps)
@@ -60,6 +61,9 @@ LAST_COMPLETED=
 **Phase 2** — server tests (MCP tool schemas, structuredContent, wait_for_stop, snapshot, resources)
 **Phase 3** — httpTransport tests (body limits, parse errors, port fallback, headers, cleanup)
 **Phase 4** — Integration verification (run tests, check types)
+**Phase 3aR** — Fix httpTransport tests to use real HTTP requests
+**Phase 3bR** — Add MCP protocol integration tests
+**Phase 4R** — Final verification and git commit
 
 ## Commands
 
@@ -177,6 +181,12 @@ Ralph Wiggum Loop for Phase {subphase}:
 "3b" → "3c"
 "3c" → "4"
 "4" → STATUS=complete
+
+# Restart phases (after fixing issues found in initial run)
+"2c" → "3aR"
+"3aR" → "3bR"
+"3bR" → "4R"
+"4R" → STATUS=complete
 ```
 
 ## Sub-Agent Prompt Template
