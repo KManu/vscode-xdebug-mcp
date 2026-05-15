@@ -48,6 +48,24 @@
         "id": "xdebugMcpProvider",
         "label": "Xdebug MCP Provider"
       }
+    ],
+    "commands": [
+      {
+        "command": "xdebug-mcp.copyUri",
+        "title": "Xdebug MCP: Copy Server URI to Clipboard"
+      },
+      {
+        "command": "xdebug-mcp.showDiagnostics",
+        "title": "Xdebug MCP: Show Diagnostics"
+      },
+      {
+        "command": "xdebug-mcp.copyConfig",
+        "title": "Xdebug MCP: Copy MCP Client Config Snippet"
+      },
+      {
+        "command": "xdebug-mcp.addToWorkspaceMcp",
+        "title": "Xdebug MCP: Add to Workspace .vscode/mcp.json"
+      }
     ]
   },
   "dependencies": {

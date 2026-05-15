@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server as HttpServer, type Ser
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { makeServer } from './server';
 import { log } from '../utils/logger';
+import { writePortFile, writeStoppedFile, cleanupPortFile } from '../utils/portFile';
 
 // We bind locally so only the current machine can reach the MCP server.
 const HOST = '127.0.0.1';
@@ -15,6 +16,7 @@ const MAX_PORT_ATTEMPTS = 3;
 
 let runningServer: HttpServer | undefined;
 let serverUriPromise: Promise<string> | undefined;
+let lastKnownUri: string | undefined;
 
 export async function startHttpServer(options: { version?: string } = {}): Promise<string> {
   // Prevent multiple simultaneous server starts on extension reloads.
@@ -196,7 +198,20 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
     const tryListen = (port: number) => {
       httpServer.listen(port, HOST, () => {
         const actualPort = (httpServer.address() as { port: number }).port;
-        resolve(`http://${HOST}:${actualPort}/mcp`);
+        const uri = `http://${HOST}:${actualPort}/mcp`;
+        lastKnownUri = uri;
+
+        // Write the port file for external clients to discover the server.
+        writePortFile({
+          uri,
+          host: HOST,
+          port: actualPort,
+          version: options.version ?? '0.0.1',
+          pid: process.pid,
+          started: new Date().toISOString(),
+        });
+
+        resolve(uri);
       });
     };
 
@@ -228,15 +243,23 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
   return serverUriPromise;
 }
 
+export function getLastKnownUri(): string | undefined {
+  return lastKnownUri;
+}
+
 export async function stopHttpServer(): Promise<void> {
   if (!runningServer) {
     return;
   }
 
+  // Mark port file as stopped before closing so readers see the stopped state.
+  writeStoppedFile();
+
   const server = runningServer;
   // Reset state BEFORE closing to avoid the close handler logging 'closed unexpectedly'.
   runningServer = undefined;
   serverUriPromise = undefined;
+  lastKnownUri = undefined;
 
   await new Promise<void>((resolve, reject) => {
     server.close((err?: Error) => {
@@ -247,4 +270,7 @@ export async function stopHttpServer(): Promise<void> {
       resolve();
     });
   });
+
+  // Clean up port file after server is fully stopped.
+  cleanupPortFile();
 }

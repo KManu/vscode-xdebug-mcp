@@ -1,14 +1,87 @@
 # vscode-xdebug-mcp
 
-Expose your active PHP/Xdebug session as an MCP server inside VS Code so agent clients (Codex) can inspect and control live debug sessions.
-This mcp server is currently being designed to run with Codex. Copilot versions and a standalone server will come later. 
+Expose your active PHP/Xdebug session as an MCP server inside VS Code so agent clients can inspect and control live debug sessions.
 
 ## What this extension does
 - Runs a local HTTP MCP server inside the VS Code Extension Host. The server uses port `3098` by default, or a dynamically allocated port if `3098` is already in use (e.g., when multiple VS Code instances are running).
 - Bridges MCP tool calls to the VS Code Debug Adapter Protocol (DAP) for your active PHP/Xdebug session.
 - Provides tools to list sessions, inspect stack/variables, set breakpoints, and control execution.
 
-> **Multiple VS Code instances:** The extension automatically handles port conflicts. If port `3098` is already bound, it falls back to an OS-assigned port. The actual URL is provided to MCP clients via the VS Code `McpHttpServerDefinition` API.
+> **Multiple VS Code instances:** The extension automatically handles port conflicts. If port `3098` is already bound, it falls back to an OS-assigned port. The actual port is written to `~/.vscode-xdebug-mcp/port.json` and shown in the VS Code status bar.
+
+## Connecting MCP clients
+
+The extension makes the MCP server discoverable through multiple paths. The status bar displays the current port (`:3098` or fallback) — click it to copy the URI to clipboard.
+
+### Automatic discovery
+
+| Client | How it connects | Setup needed |
+|--------|----------------|-------------|
+| **VS Code Copilot / Agent Mode** | Uses `registerMcpServerDefinitionProvider` API | **None** — automatic |
+
+### One-click setup
+
+Run **`Xdebug MCP: Add to Workspace .vscode/mcp.json`** from the Command Palette to create or update your workspace's `.vscode/mcp.json` with the current server URL. This works for any MCP client that reads the standard `.mcp.json` / `.vscode/mcp.json` format:
+
+| Client | Config file |
+|--------|------------|
+| **pi** (via pi-mcp-adapter) | `.mcp.json` or `~/.config/mcp/mcp.json` |
+| **VS Code** | `.vscode/mcp.json` |
+| **Codex** (when `mcp.json` support lands) | `.mcp.json` |
+
+### Manual configuration (copy-paste)
+
+Run **`Xdebug MCP: Copy MCP Client Config Snippet`** from the Command Palette to copy the appropriate config snippet for your client:
+
+**Codex** (`~/.codex/config.toml` or `.codex/config.toml`):
+```toml
+[mcp_servers.xdebug]
+url = "http://127.0.0.1:3098/mcp"
+```
+
+**Claude Code** (`~/.claude/settings.json` → `mcpServers`):
+```json
+"xdebug": {
+  "type": "http",
+  "url": "http://127.0.0.1:3098/mcp"
+}
+```
+
+**Standard `.mcp.json`** (workspace or global):
+```json
+"xdebug": {
+  "type": "http",
+  "url": "http://127.0.0.1:3098/mcp"
+}
+```
+
+### File-based discovery (external tools)
+
+The extension writes the active MCP URI to `~/.vscode-xdebug-mcp/port.json`:
+
+```json
+{
+  "uri": "http://127.0.0.1:3098/mcp",
+  "host": "127.0.0.1",
+  "port": 3098,
+  "version": "0.1.0",
+  "pid": 12345,
+  "started": "2026-05-15T10:30:00.000Z"
+}
+```
+
+External CLI tools and scripts can read this file to discover the active port. When the server stops, the file is marked `{"status": "stopped"}`.
+
+> **Note on Codex:** Codex currently uses TOML config (`~/.codex/config.toml`) and does not automatically discover MCP servers from VS Code extensions. Use the `Copy MCP Client Config Snippet` command and paste into your Codex config.
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `Xdebug MCP: Copy Server URI to Clipboard` | Copies `http://127.0.0.1:{port}/mcp` to clipboard |
+| `Xdebug MCP: Copy MCP Client Config Snippet` | Copies ready-to-paste config for Codex, Claude Code, or standard `.mcp.json` |
+| `Xdebug MCP: Add to Workspace .vscode/mcp.json` | Creates/updates workspace `.vscode/mcp.json` with the current port (shows preview before writing) |
+| `Xdebug MCP: Show Diagnostics` | Shows server version, MCP URI, and active session count |
 
 ## How it works (high level)
 1. **VS Code activates the extension** and starts the HTTP MCP server.
@@ -65,17 +138,15 @@ Notes:
 
 > Note: the MCP server runs **inside** the Extension Host. If your EDH is remote (WSL/SSH/Dev Container), the port is allocated dynamically and the URL is discoverable through the McpHttpServerDefinition.
 
-## Usage in Vscode with Codex
+## Installation
 1. Clone repo
 2. Run `npm install`
-3. Run `npm run vsce:package` to build the .vsix file.
-4. In Vscode, navigate to the extensions tab, and click on the ellipsis at the top right corner and click 'Install from VSIX'
-5. Select the generated file and install it.
-6. Reload vscode
-7. The MCP server is automatically discovered by VS Code's MCP integration. Open a codex chat window and verify the MCP servers are available (no manual URL configuration needed).
-8. Start a PHP debug session in VS Code and set a breakpoint. Then ask the codex agent to access the call frame or variables in the execution scope.
-
-> **Note:** The MCP server uses port `3098` by default, or a dynamic port if `3098` is already in use. VS Code's MCP integration handles the URL discovery automatically — manual configuration is only needed for external MCP clients connecting from outside VS Code. 
+3. Run `npm run vsce:package` to build the `.vsix` file.
+4. In VS Code, navigate to the extensions tab, click the ellipsis at the top right corner, and select **Install from VSIX**.
+5. Select the generated `.vsix` file and install it.
+6. Reload VS Code.
+7. The MCP server starts automatically. For **VS Code Copilot/Agent Mode**, it's discovered automatically. For other clients, see [Connecting MCP clients](#connecting-mcp-clients) above.
+8. Start a PHP debug session in VS Code and set a breakpoint. Ask your agent to inspect the call stack or variables.
 
 
 ## MCP tools (overview)
