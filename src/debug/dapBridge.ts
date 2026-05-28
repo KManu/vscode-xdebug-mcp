@@ -483,3 +483,16 @@ export async function disconnect(options: {
     suspendDebuggee: options.suspendDebuggee
   });
 }
+
+/**
+ * Test helper — resolves a file path to a workspace Uri.
+ * STATELESS: does not read sessionRegistry. Integration tests import
+ * a separate module instance with an empty registry; this function
+ * uses only vscode.workspace.workspaceFolders.
+ */
+export async function __resolveFileUriForTesting(
+  file: string,
+  sessionId?: string
+): Promise<vscode.Uri> {
+  return resolveFileUri(file, sessionId);
+}

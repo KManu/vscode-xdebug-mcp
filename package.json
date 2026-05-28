@@ -27,14 +27,21 @@
     "package": "npm run check-types && node esbuild.js --production",
     "vsce:package": "npm run package && npx vsce package",
     "test": "vitest run",
-    "test:watch": "vitest watch"
+    "test:watch": "vitest watch",
+    "compile:integration": "tsc -p tsconfig.integration.json",
+    "verify:mock-dap": "node scripts/verify-mock-dap.js",
+    "test:integration": "npm run compile:integration && npm run compile && npm run verify:mock-dap && vscode-test",
+    "test:all": "npm run compile && npm run compile:integration && npm run verify:mock-dap && npm run test && vscode-test"
   },
   "keywords": [
     "xdebug",
     "mcp",
     "debug"
   ],
-  "categories": ["Other", "Debuggers"],
+  "categories": [
+    "Other",
+    "Debuggers"
+  ],
   "author": "Kwabena Manu",
   "repository": {
     "type": "git",
@@ -47,6 +54,12 @@
       {
         "id": "xdebugMcpProvider",
         "label": "Xdebug MCP Provider"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "xdebug-mcp-test",
+        "label": "Xdebug MCP Test Adapter"
       }
     ],
     "commands": [
@@ -75,6 +88,8 @@
   "devDependencies": {
     "@types/node": "^24.9.1",
     "@types/vscode": "^1.105.0",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
     "esbuild": "^0.24.2",
     "npm-run-all": "^4.1.5",
     "typescript": "^5.9.3",
