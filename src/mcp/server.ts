@@ -283,7 +283,7 @@ export function makeServer(options: { version?: string } = {}): McpServer {
       description: 'List scopes for a stack frame',
       inputSchema: {
         sessionId: sessionIdSchema,
-        frameId: z.number().int().positive()
+        frameId: z.number().int().min(0)
       }
     },
     safeHandler(async ({ sessionId, frameId }): Promise<CallToolResult & { structuredContent: unknown }> => {
@@ -627,7 +627,7 @@ export function makeServer(options: { version?: string } = {}): McpServer {
       inputSchema: {
         sessionId: sessionIdSchema,
         expr: z.string(),
-        frameId: z.number().int().positive().optional(),
+        frameId: z.number().int().min(0).optional(),
         context: z.enum(['watch', 'repl', 'hover', 'clipboard']).optional(),
         threadId: z.number().int().positive().optional()
       }

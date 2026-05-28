@@ -153,13 +153,13 @@ describe('server tool schema validation', () => {
       expect(result.error?.issues[0].path).toContain('frameId');
     });
 
-    it('should reject invalid frameId (non-positive)', () => {
+    it('should accept frameId 0 (zero is a valid DAP frame ID)', () => {
       const server = makeServer({ version: '0.0.1' });
       const schema = getToolInputSchema(server, 'scopes');
       expect(schema).toBeDefined();
 
       const result = validateInput(schema!, { frameId: 0 });
-      expect(result.success).toBe(false);
+      expect(result.success).toBe(true);
     });
 
     it('should reject invalid frameId (negative)', () => {
