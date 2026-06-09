@@ -394,27 +394,24 @@ class MockDebugAdapter implements vscode.DebugAdapter {
   // --- continue -------------------------------------------------------
   private handleContinue(request: DapRequest): void {
     this.isRunning = true;
-    // Send response first so the caller doesn't see an error from a
-    // session that hasn't been terminated yet.
     this._sendResponse(request, { allThreadsContinued: true });
-    this._fireEvent('terminated', { threadId: this.threadId });
-    this.terminated = true;
+    // Do NOT fire terminated — real Xdebug keeps the session alive after continue.
   }
 
   // --- step commands (next / stepIn / stepOut) ------------------------
   private handleStep(request: DapRequest, cmd: string): void {
     this.isRunning = false;
     this.terminated = false;
-    this._fireEvent('stopped', { reason: 'step', threadId: this.threadId });
     this._sendResponse(request, {});
+    this._fireEvent('stopped', { reason: 'step', threadId: this.threadId });
   }
 
   // --- pause ----------------------------------------------------------
   private handlePause(request: DapRequest): void {
     this.isRunning = false;
     this.terminated = false;
-    this._fireEvent('stopped', { reason: 'pause', threadId: this.threadId });
     this._sendResponse(request, {});
+    this._fireEvent('stopped', { reason: 'pause', threadId: this.threadId });
   }
 
   // --- restart --------------------------------------------------------
@@ -428,12 +425,12 @@ class MockDebugAdapter implements vscode.DebugAdapter {
     this.nextFuncBpId = 1;
     this.fileBreakpoints = [];
     this.functionBreakpoints = [];
+    this._sendResponse(request, {});
     this._fireEvent('stopped', {
       reason: 'breakpoint',
       threadId: this.threadId,
       allThreadsStopped: true,
     });
-    this._sendResponse(request, {});
   }
 
   // --- terminate ------------------------------------------------------

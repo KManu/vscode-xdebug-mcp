@@ -11,53 +11,12 @@
 
 import * as assert from 'assert';
 import * as http from 'node:http';
-import * as fs from 'node:fs';
-import * as os from 'node:os';
-import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { z } from 'zod';
+import { outputSchemas } from '../../mcp/server';
 
 // ── Port resolution ──────────────────────────────────────────────
 
-export function getPort(): Promise<number> {
-  const portFile = path.join(os.homedir(), '.vscode-xdebug-mcp', 'port.json');
-  return new Promise((resolve, reject) => {
-    const start = Date.now();
-    const check = () => {
-      try {
-        const data = JSON.parse(fs.readFileSync(portFile, 'utf8'));
-        if (data.port) {
-          // If status: 'stopped', we need to wait for a new start.
-          if (data.status === 'stopped') {
-            if (Date.now() - start > 10000) {
-              return reject(new Error('Port file shows stopped, server never restarted'));
-            }
-            setTimeout(check, 200);
-            return;
-          }
-          // Verify PID is alive.
-          try {
-            process.kill(data.pid, 0);
-          } catch {
-            if (Date.now() - start > 10000) {
-              return reject(new Error('Server PID is dead after 10s'));
-            }
-            setTimeout(check, 200);
-            return;
-          }
-          return resolve(data.port);
-        }
-      } catch {
-        // File may not exist yet.
-      }
-      if (Date.now() - start > 10000) {
-        return reject(new Error('Port file not found after 10s'));
-      }
-      setTimeout(check, 200);
-    };
-    check();
-  });
-}
+import { getServerPort } from '../helpers/portResolver';
 
 // ── HTTP / JSON-RPC helpers ──────────────────────────────────────
 
@@ -128,42 +87,49 @@ async function initializeMcp(port: number): Promise<void> {
 
 // ── Session management helpers ───────────────────────────────────
 
-async function startDebugSession(): Promise<vscode.DebugSession> {
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  if (!folder) {
-    throw new Error('No workspace folder');
+/**
+ * Poll the MCP status tool until the active session reports stopped === true.
+ */
+async function pollUntilStopped(
+  port: number,
+  timeoutMs = 5000,
+  intervalMs = 50,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const resp = await toolCall(port, 'status');
+      const sc = resp.result?.structuredContent || resp.result || {};
+      if (sc.status?.stopped === true) return;
+    } catch {
+      // Server may not be ready yet.
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
   }
+  throw new Error(`Timed out waiting for session to stop after ${timeoutMs}ms`);
+}
 
-  // Listen for onDidStartDebugSession BEFORE calling startDebugging.
-  const sessionPromise = new Promise<vscode.DebugSession>((resolve) => {
-    const sub = vscode.debug.onDidStartDebugSession((session) => {
-      sub.dispose();
-      resolve(session);
-    });
-    setTimeout(() => {
-      sub.dispose();
-      resolve(undefined as unknown as vscode.DebugSession);
-    }, 5000);
-  });
-
-  const started = await vscode.debug.startDebugging(folder, {
-    type: 'xdebug-mcp-test',
-    name: 'Test Session',
-    request: 'launch',
-  });
-
-  assert.ok(started, 'startDebugging should return true');
-
-  const session = await sessionPromise;
-  assert.ok(session, 'Debug session should start');
-
-  // Give the mock debug adapter time to process configurationDone
-  // and fire its internal 'stopped' event (100ms delay in the mock).
-  // Standard DAP events like 'stopped' are NOT forwarded to
-  // onDidReceiveDebugSessionCustomEvent, so we use a simple delay.
-  await new Promise((resolve) => setTimeout(resolve, 1500));
-
-  return session;
+/**
+ * Poll list_sessions until a specific session is no longer present
+ * (terminated or disconnected).
+ */
+async function pollUntilSessionGone(
+  port: number,
+  sessionId: string,
+  timeoutMs = 5000,
+  intervalMs = 50,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const resp = await toolCall(port, 'list_sessions');
+    const sc = resp.result?.structuredContent || resp.result || {};
+    const found = (sc.sessions || []).some((s: any) => s.id === sessionId);
+    if (!found) return;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new Error(
+    `Timed out waiting for session ${sessionId} to be removed after ${timeoutMs}ms`,
+  );
 }
 
 async function stopDebugSession(timeout = 5000): Promise<void> {
@@ -198,8 +164,44 @@ describe('MCP Tools', function () {
   let activeSession: vscode.DebugSession | undefined;
 
   before(async function () {
-    port = await getPort();
+    const info = await getServerPort();
+    port = info.port;
   });
+
+  async function startDebugSession(): Promise<vscode.DebugSession> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+      throw new Error('No workspace folder');
+    }
+
+    // Listen for onDidStartDebugSession BEFORE calling startDebugging.
+    const sessionPromise = new Promise<vscode.DebugSession>((resolve) => {
+      const sub = vscode.debug.onDidStartDebugSession((session) => {
+        sub.dispose();
+        resolve(session);
+      });
+      setTimeout(() => {
+        sub.dispose();
+        resolve(undefined as unknown as vscode.DebugSession);
+      }, 5000);
+    });
+
+    const started = await vscode.debug.startDebugging(folder, {
+      type: 'xdebug-mcp-test',
+      name: 'Test Session',
+      request: 'launch',
+    });
+
+    assert.ok(started, 'startDebugging should return true');
+
+    const session = await sessionPromise;
+    assert.ok(session, 'Debug session should start');
+
+    // Poll the MCP status tool until the session reports stopped.
+    await pollUntilStopped(port, 5000, 50);
+
+    return session;
+  }
 
   // ── 4.1 Discovery ──────────────────────────────────────────
 
@@ -300,8 +302,12 @@ describe('MCP Tools', function () {
     afterEach(async function () {
       try {
         await stopDebugSession();
-      } catch {
-        // Session may already be terminated.
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes('not found') && !msg.includes('No active') &&
+            !msg.includes('terminated') && !msg.includes('disconnect')) {
+          console.warn(`[afterEach cleanup] Unexpected error: ${msg}`);
+        }
       }
       activeSession = undefined;
     });
@@ -317,7 +323,11 @@ describe('MCP Tools', function () {
       const frame = sc.frames[0];
       assert.strictEqual(typeof frame.id, 'number', 'frame should have numeric id');
       assert.strictEqual(typeof frame.name, 'string', 'frame should have name');
-      assert.ok(frame.source || frame.source === undefined, 'frame may have source');
+      assert.ok(frame.source, 'frame should have a source');
+      if (frame.source) {
+        assert.strictEqual(typeof (frame.source as any).name, 'string', 'source should have name');
+        assert.strictEqual(typeof (frame.source as any).path, 'string', 'source should have path');
+      }
       assert.strictEqual(typeof frame.line, 'number', 'frame should have numeric line');
     });
 
@@ -452,8 +462,12 @@ describe('MCP Tools', function () {
     afterEach(async function () {
       try {
         await stopDebugSession();
-      } catch {
-        // Session may already be terminated.
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes('not found') && !msg.includes('No active') &&
+            !msg.includes('terminated') && !msg.includes('disconnect')) {
+          console.warn(`[afterEach cleanup] Unexpected error: ${msg}`);
+        }
       }
       activeSession = undefined;
     });
@@ -553,25 +567,27 @@ describe('MCP Tools', function () {
     afterEach(async function () {
       try {
         await stopDebugSession();
-      } catch {
-        // Session may already be terminated.
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes('not found') && !msg.includes('No active') &&
+            !msg.includes('terminated') && !msg.includes('disconnect')) {
+          console.warn(`[afterEach cleanup] Unexpected error: ${msg}`);
+        }
       }
       activeSession = undefined;
     });
 
-    it('continue: returns okResult, session removed from list_sessions', async function () {
+    it('continue: returns okResult, session still listed (not auto-terminated)', async function () {
       const resp = await toolCall(port, 'continue');
       const sc = resp.result.structuredContent || resp.result;
       assert.strictEqual(sc.success, true, 'continue should return success');
 
-      // Wait for async event propagation.
-      await new Promise((r) => setTimeout(r, 200));
-
-      // Verify session is no longer listed.
+      // After Fix 1, continue does NOT auto-terminate the session.
+      // The session should still be in list_sessions.
       const listResp = await toolCall(port, 'list_sessions');
       const listSc = listResp.result.structuredContent || listResp.result;
       const found = listSc.sessions.some((s: any) => s.id === activeSession!.id);
-      assert.strictEqual(found, false, 'session should not be in list_sessions after continue');
+      assert.strictEqual(found, true, 'session should still be in list_sessions after continue');
     });
 
     it('step_over: mock fires stopped, verify status.stopped is true', async function () {
@@ -579,8 +595,7 @@ describe('MCP Tools', function () {
       const sc = resp.result.structuredContent || resp.result;
       assert.strictEqual(sc.success, true, 'step_over should return success');
 
-      // Wait for the stopped event.
-      await new Promise((r) => setTimeout(r, 100));
+      await pollUntilStopped(port, 5000, 50);
 
       const statusResp = await toolCall(port, 'status');
       const statusSc = statusResp.result.structuredContent || statusResp.result;
@@ -592,7 +607,7 @@ describe('MCP Tools', function () {
       const sc = resp.result.structuredContent || resp.result;
       assert.strictEqual(sc.success, true, 'step_in should return success');
 
-      await new Promise((r) => setTimeout(r, 100));
+      await pollUntilStopped(port, 5000, 50);
 
       const statusResp = await toolCall(port, 'status');
       const statusSc = statusResp.result.structuredContent || statusResp.result;
@@ -604,7 +619,7 @@ describe('MCP Tools', function () {
       const sc = resp.result.structuredContent || resp.result;
       assert.strictEqual(sc.success, true, 'step_out should return success');
 
-      await new Promise((r) => setTimeout(r, 100));
+      await pollUntilStopped(port, 5000, 50);
 
       const statusResp = await toolCall(port, 'status');
       const statusSc = statusResp.result.structuredContent || statusResp.result;
@@ -616,7 +631,7 @@ describe('MCP Tools', function () {
       const sc = resp.result.structuredContent || resp.result;
       assert.strictEqual(sc.success, true, 'pause should return success');
 
-      await new Promise((r) => setTimeout(r, 100));
+      await pollUntilStopped(port, 5000, 50);
 
       const statusResp = await toolCall(port, 'status');
       const statusSc = statusResp.result.structuredContent || statusResp.result;
@@ -628,7 +643,7 @@ describe('MCP Tools', function () {
       const sc = resp.result.structuredContent || resp.result;
       assert.strictEqual(sc.success, true, 'restart should return success');
 
-      await new Promise((r) => setTimeout(r, 200));
+      await pollUntilStopped(port, 5000, 50);
 
       // Session should still be listed.
       const listResp = await toolCall(port, 'list_sessions');
@@ -646,7 +661,7 @@ describe('MCP Tools', function () {
       const sc = resp.result.structuredContent || resp.result;
       assert.strictEqual(sc.success, true, 'terminate should return success');
 
-      await new Promise((r) => setTimeout(r, 200));
+      await pollUntilSessionGone(port, activeSession!.id, 5000, 50);
 
       const listResp = await toolCall(port, 'list_sessions');
       const listSc = listResp.result.structuredContent || listResp.result;
@@ -659,7 +674,7 @@ describe('MCP Tools', function () {
       const sc = resp.result.structuredContent || resp.result;
       assert.strictEqual(sc.success, true, 'disconnect should return success');
 
-      await new Promise((r) => setTimeout(r, 200));
+      await pollUntilSessionGone(port, activeSession!.id, 5000, 50);
 
       const listResp = await toolCall(port, 'list_sessions');
       const listSc = listResp.result.structuredContent || listResp.result;
@@ -687,8 +702,12 @@ describe('MCP Tools', function () {
     afterEach(async function () {
       try {
         await stopDebugSession();
-      } catch {
-        // Session may already be terminated.
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes('not found') && !msg.includes('No active') &&
+            !msg.includes('terminated') && !msg.includes('disconnect')) {
+          console.warn(`[afterEach cleanup] Unexpected error: ${msg}`);
+        }
       }
       activeSession = undefined;
     });
@@ -740,8 +759,12 @@ describe('MCP Tools', function () {
     afterEach(async function () {
       try {
         await stopDebugSession();
-      } catch {
-        // Session may already be terminated.
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes('not found') && !msg.includes('No active') &&
+            !msg.includes('terminated') && !msg.includes('disconnect')) {
+          console.warn(`[afterEach cleanup] Unexpected error: ${msg}`);
+        }
       }
       activeSession = undefined;
     });
@@ -791,48 +814,28 @@ describe('MCP Tools', function () {
   // ── 4.7 Session lifecycle ────────────────────────────────────
 
   describe('4.7 Session lifecycle', function () {
-    it('after continue, session removed from list_sessions', async function () {
+    it('after continue, session is alive and accessible', async function () {
       const session = await startDebugSession();
 
-      const resp = await toolCall(port, 'continue');
-      const sc = resp.result.structuredContent || resp.result;
-      assert.strictEqual(sc.success, true, 'continue should return success');
+      await toolCall(port, 'continue');
 
-      await new Promise((r) => setTimeout(r, 200));
-
+      // Session should still be in list_sessions (not removed by continue).
       const listResp = await toolCall(port, 'list_sessions');
       const listSc = listResp.result.structuredContent || listResp.result;
       const found = listSc.sessions.some((s: any) => s.id === session.id);
-      assert.strictEqual(found, false, 'session should not be in list_sessions after continue');
+      assert.strictEqual(found, true,
+        'session should still be in list_sessions after continue (Fix 1: no auto-terminate)');
 
-      // The mock already fired terminated — session is gone.
-      activeSession = undefined;
-    });
+      // Stack should still work — mock always returns frames regardless of running state.
+      const stackResp = await toolCall(port, 'stack');
+      const stackSc = stackResp.result.structuredContent || stackResp.result;
+      assert.strictEqual(stackSc.success, true,
+        'stack should succeed after continue (session is alive)');
+      assert.ok(Array.isArray(stackSc.frames), 'should return frames');
+      assert.ok(stackSc.frames.length > 0, 'should have at least one frame');
 
-    it('isNotStoppedError: call stack after continue returns error', async function () {
-      const session = await startDebugSession();
-
-      // Call continue — mock fires terminated immediately, removing the session.
-      await toolCall(port, 'continue');
-
-      // Immediately (synchronously) try to call stack.
-      // The session has been terminated by the continue handler, so the bridge
-      // will report that there is no active debug session or it is no longer stopped.
-      const resp = await toolCall(port, 'stack');
-      const sc = resp.result.structuredContent || resp.result;
-      assert.strictEqual(sc.success, false, 'stack should fail after continue/terminate');
-      assert.ok(
-        sc.error && (
-          sc.error.includes('not stopped') ||
-          sc.error.includes('stopped') ||
-          sc.error.includes('No active') ||
-          sc.error.includes('not found') ||
-          sc.error.includes('custom request failed')
-        ),
-        `Expected error about no active session or not stopped, got: ${sc.error}`,
-      );
-
-      // Cleanup: session is already terminated.
+      // Cleanup: terminate since session is still alive.
+      await toolCall(port, 'terminate');
       activeSession = undefined;
       await stopDebugSession().catch(() => undefined);
     });
@@ -843,150 +846,38 @@ describe('MCP Tools', function () {
   describe('4.8 Output schema validation', function () {
     let sessionId: string;
 
-    /**
-     * Schema definitions matching the outputSchema of registered tools.
-     * These correspond to what the server produces in structuredContent.
-     */
-
-    // set_breakpoint outputSchema: { results: array of { verified: boolean, message?: string } }
-    const setBreakpointOutputSchema = z.object({
-      success: z.literal(true),
-      results: z.array(
-        z.object({
-          verified: z.boolean(),
-          message: z.string().optional(),
-        }),
-      ),
-    });
-
-    // set_logpoint outputSchema: same shape as set_breakpoint
-    const setLogpointOutputSchema = z.object({
-      success: z.literal(true),
-      results: z.array(
-        z.object({
-          verified: z.boolean(),
-          message: z.string().optional(),
-        }),
-      ),
-    });
-
-    // status outputSchema: status object with session, stopped, threads, etc.
-    // We define a relaxed schema that matches what the tool actually returns.
-    const statusOutputSchema = z.object({
-      success: z.literal(true),
-      status: z.object({
-        session: z.object({
-          id: z.string(),
-          name: z.string(),
-          type: z.string(),
-          workspaceFolder: z.string().optional(),
-        }),
-        stopped: z.boolean(),
-        threadId: z.number().optional(),
-        threads: z.array(
-          z.object({
-            id: z.number(),
-            name: z.string(),
-          }),
-        ).optional(),
-      }),
-    });
-
-    // stack outputSchema: frames array
-    const stackOutputSchema = z.object({
-      success: z.literal(true),
-      frames: z.array(
-        z.object({
-          id: z.number(),
-          name: z.string(),
-          line: z.number(),
-          column: z.number().optional(),
-          source: z.unknown().optional(),
-        }),
-      ),
-    });
-
-    // scopes outputSchema
-    const scopesOutputSchema = z.object({
-      success: z.literal(true),
-      scopes: z.array(
-        z.object({
-          name: z.string(),
-          variablesReference: z.number(),
-          expensive: z.boolean().optional(),
-        }),
-      ),
-    });
-
-    // variables outputSchema
-    const variablesOutputSchema = z.object({
-      success: z.literal(true),
-      variables: z.array(
-        z.object({
-          name: z.string(),
-          value: z.string(),
-          type: z.string().optional(),
-          variablesReference: z.number().optional(),
-        }),
-      ),
-    });
-
-    // wait_for_stop outputSchema
-    const waitForStopOutputSchema = z.object({
-      success: z.literal(true),
-      stopped: z.literal(true),
-      frame: z.object({
-        id: z.number(),
-        name: z.string(),
-        line: z.number(),
-      }),
-    });
-
-    // list_sessions outputSchema
-    const listSessionsOutputSchema = z.object({
-      success: z.literal(true),
-      sessions: z.array(
-        z.object({
-          id: z.string(),
-          name: z.string(),
-          type: z.string(),
-          workspaceFolder: z.string().optional(),
-        }),
-      ),
-    });
-
-    // Map of tool name → Zod schema for structuredContent validation.
-    const toolSchemas: Record<string, { schema: z.ZodObject<any>; args: any; setup?: () => Promise<any> }> = {
+    // Map of tool name → Zod output schema from server.ts (single source of truth).
+    const toolSchemas: Record<string, { schema: any; args: any; setup?: () => Promise<any> }> = {
       set_breakpoint: {
-        schema: setBreakpointOutputSchema,
+        schema: outputSchemas.setBreakpoint,
         args: { file: 'index.php', breakpoints: [{ line: 5 }] },
       },
       set_logpoint: {
-        schema: setLogpointOutputSchema,
+        schema: outputSchemas.setLogpoint,
         args: { file: 'index.php', logpoints: [{ line: 5, logMessage: 'test' }] },
       },
       status: {
-        schema: statusOutputSchema,
+        schema: outputSchemas.status,
         args: {},
       },
       stack: {
-        schema: stackOutputSchema,
+        schema: outputSchemas.stack,
         args: {},
       },
       scopes: {
-        schema: scopesOutputSchema,
+        schema: outputSchemas.scopes,
         args: { frameId: 0 },
       },
       variables: {
-        schema: variablesOutputSchema,
+        schema: outputSchemas.variables,
         args: { variablesReference: 100 },
       },
       wait_for_stop: {
-        schema: waitForStopOutputSchema,
+        schema: outputSchemas.waitForStop,
         args: { pollMs: 50, timeoutMs: 5000 },
       },
       list_sessions: {
-        schema: listSessionsOutputSchema,
+        schema: outputSchemas.listSessions,
         args: {},
       },
     };
@@ -999,8 +890,12 @@ describe('MCP Tools', function () {
     afterEach(async function () {
       try {
         await stopDebugSession();
-      } catch {
-        // Session may already be terminated.
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes('not found') && !msg.includes('No active') &&
+            !msg.includes('terminated') && !msg.includes('disconnect')) {
+          console.warn(`[afterEach cleanup] Unexpected error: ${msg}`);
+        }
       }
       activeSession = undefined;
     });

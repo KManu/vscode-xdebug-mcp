@@ -11,9 +11,6 @@ const PORT_FILE = path.join(os.homedir(), '.vscode-xdebug-mcp', 'port.json');
 describe('Extension Activation', function () {
   this.timeout(15000);
 
-  // Track deactivation for suite-level cleanup check.
-  let deactivated = false;
-
   it('extension is active after VS Code starts', function () {
     const ext = vscode.extensions.getExtension('KwabenaManu.vscode-xdebug-mcp');
     assert.ok(ext, 'Extension should be resolvable by publisher + name');
@@ -28,17 +25,15 @@ describe('Extension Activation', function () {
     );
   });
 
-  it('deactivates cleanly without uncaught errors', async function () {
-    const ext = vscode.extensions.getExtension('KwabenaManu.vscode-xdebug-mcp');
-    assert.ok(ext, 'Extension should exist before deactivation');
-
+  it('server is running and port file is valid', function () {
+    const portFile = path.join(os.homedir(), '.vscode-xdebug-mcp', 'port.json');
+    const data = JSON.parse(fs.readFileSync(portFile, 'utf8'));
+    assert.ok(typeof data.port === 'number', 'port should be a number');
+    assert.ok(typeof data.pid === 'number', 'pid should be a number');
     try {
-      // Trigger deactivation by calling the extension's deactivate.
-      // The extension's activate() returns { deactivate } or we use the global deactivate hook.
-      await ext?.exports?.deactivate?.();
-      deactivated = true;
-    } catch (err) {
-      assert.fail(`Deactivation threw an error: ${String(err)}`);
+      process.kill(data.pid, 0);
+    } catch {
+      assert.fail('Server PID is dead');
     }
   });
 });

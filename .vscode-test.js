@@ -6,7 +6,7 @@ const testWorkspace = path.resolve(__dirname, 'src/test/fixtures/test-workspace'
 
 module.exports = defineConfig({
   files: 'out/test/src/test/suite/**/*.test.js',
-  version: 'stable',
+  version: '1.122.0',
   workspaceFolder: testWorkspace,
   mocha: {
     ui: 'bdd',

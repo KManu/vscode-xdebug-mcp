@@ -3,57 +3,12 @@
 // Makes real HTTP requests to the server running in the Extension Host.
 import * as assert from 'assert';
 import * as http from 'node:http';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import * as os from 'node:os';
 
 // ── Port resolution helper ─────────────────────────────────────
 // The MCP server writes its port to ~/.vscode-xdebug-mcp/port.json.
 // Poll the file until it appears (server may not have started yet).
 
-const PORT_FILE = path.join(os.homedir(), '.vscode-xdebug-mcp', 'port.json');
-
-interface PortInfo {
-  uri: string;
-  host: string;
-  port: number;
-  version: string;
-  pid: number;
-  started: string;
-}
-
-async function getServerPort(maxWaitMs = 5000, pollIntervalMs = 100): Promise<PortInfo> {
-  const start = Date.now();
-
-  while (Date.now() - start < maxWaitMs) {
-    try {
-      const raw = fs.readFileSync(PORT_FILE, 'utf8');
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-
-      if (parsed && typeof parsed === 'object' && typeof parsed.port === 'number' && typeof parsed.host === 'string') {
-        if ('status' in parsed) {
-          // Server is stopped — keep polling (may not have restarted yet).
-          await new Promise(r => setTimeout(r, pollIntervalMs));
-          continue;
-        }
-        // Verify the PID is alive.
-        try {
-          process.kill(parsed.pid as number, 0);
-        } catch {
-          // PID is dead, keep polling.
-          await new Promise(r => setTimeout(r, pollIntervalMs));
-          continue;
-        }
-        return parsed as unknown as PortInfo;
-      }
-    } catch {
-      // File may not exist yet — keep polling.
-    }
-    await new Promise(r => setTimeout(r, pollIntervalMs));
-  }
-
-  throw new Error(`Timed out waiting for port file after ${maxWaitMs}ms`);
-}
+import { getServerPort, type PortInfo } from '../helpers/portResolver';
 
 // ── HTTP request helper ────────────────────────────────────────
 
@@ -287,8 +242,11 @@ describe('HTTP Transport', function () {
       assert.strictEqual(body.error.message, 'Payload too large');
     } catch (err) {
       // Write errors may occur if the connection is destroyed by the server.
-      // That's acceptable — the server correctly rejected the payload.
-      assert.ok(true, 'Large payload correctly rejected');
+      const message = err instanceof Error ? err.message : String(err);
+      assert.ok(
+        message.includes('ECONNRESET') || message.includes('socket hang up') || message.includes('EPIPE'),
+        `Expected connection error for rejected payload, got: ${message}`
+      );
     }
   });
 
@@ -333,12 +291,11 @@ describe('HTTP Transport', function () {
       assert.strictEqual(body.error.code, -32700);
     } catch (err) {
       // The server may reject the connection for empty body.
-      // Accept either a response or a connection error.
-      if (err instanceof Error && (err.message.includes('ECONNRESET') || err.message.includes('Parse error'))) {
-        assert.ok(true, 'Empty body correctly rejected');
-      } else {
-        throw err;
-      }
+      const message = err instanceof Error ? err.message : String(err);
+      assert.ok(
+        message.includes('ECONNRESET') || message.includes('Parse error') || message.includes('socket hang up'),
+        `Expected rejection for empty body, got: ${message}`
+      );
     }
   });
 });

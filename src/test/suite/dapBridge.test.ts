@@ -49,8 +49,8 @@ async function startDebugSession(): Promise<vscode.DebugSession> {
   // Give the mock debug adapter time to process configurationDone
   // and fire its internal 'stopped' event (100ms delay in the mock).
   // Standard DAP events like 'stopped' are NOT forwarded to
-  // onDidReceiveDebugSessionCustomEvent, so we use a simple delay.
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  // onDidReceiveDebugSessionCustomEvent, so we use a short delay.
+  await new Promise((resolve) => setTimeout(resolve, 200));
 
   return activeSession;
 }
@@ -114,9 +114,11 @@ describe('DAP Bridge', function () {
     it('session end — onDidTerminateDebugSession fires after disconnect', async function () {
       const session = await startDebugSession();
 
+      let terminatedFired = false;
       const terminatedPromise = new Promise<void>((resolve) => {
         const sub = vscode.debug.onDidTerminateDebugSession((s) => {
           if (s.id === session.id) {
+            terminatedFired = true;
             sub.dispose();
             resolve();
           }
@@ -130,8 +132,8 @@ describe('DAP Bridge', function () {
       await session.customRequest('disconnect', { terminateDebuggee: true });
       await terminatedPromise;
 
-      // Verify terminated event fired (no timeout hit).
-      assert.ok(true, 'onDidTerminateDebugSession fired');
+      assert.strictEqual(terminatedFired, true,
+        'onDidTerminateDebugSession should fire on disconnect');
     });
   });
 
@@ -209,29 +211,13 @@ describe('DAP Bridge', function () {
     afterEach(async function () {
       try {
         await stopDebugSession(session);
-      } catch {
-        // Session may already be terminated.
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes('not found') && !msg.includes('No active') &&
+            !msg.includes('terminated') && !msg.includes('disconnect')) {
+          console.warn(`[afterEach cleanup] Unexpected error: ${msg}`);
+        }
       }
-    });
-
-    it('continue fires terminated event', async function () {
-      const terminatedPromise = new Promise<void>((resolve) => {
-        const sub = vscode.debug.onDidTerminateDebugSession((s) => {
-          if (s.id === session.id) {
-            sub.dispose();
-            resolve();
-          }
-        });
-        setTimeout(() => {
-          sub.dispose();
-          resolve();
-        }, 5000);
-      });
-
-      await session.customRequest('continue', { threadId: 1 });
-
-      await terminatedPromise;
-      assert.ok(true, 'onDidTerminateDebugSession fired after continue');
     });
 
     it('next returns success', async function () {
@@ -300,9 +286,11 @@ describe('DAP Bridge', function () {
     });
 
     it('terminate fires terminated event', async function () {
+      let terminatedFired = false;
       const terminatedPromise = new Promise<void>((resolve) => {
         const sub = vscode.debug.onDidTerminateDebugSession((s) => {
           if (s.id === session.id) {
+            terminatedFired = true;
             sub.dispose();
             resolve();
           }
@@ -316,13 +304,16 @@ describe('DAP Bridge', function () {
       await session.customRequest('terminate', {});
 
       await terminatedPromise;
-      assert.ok(true, 'onDidTerminateDebugSession fired after terminate');
+      assert.strictEqual(terminatedFired, true,
+        'onDidTerminateDebugSession should fire on terminate');
     });
 
     it('disconnect fires terminated event', async function () {
+      let terminatedFired = false;
       const terminatedPromise = new Promise<void>((resolve) => {
         const sub = vscode.debug.onDidTerminateDebugSession((s) => {
           if (s.id === session.id) {
+            terminatedFired = true;
             sub.dispose();
             resolve();
           }
@@ -336,7 +327,8 @@ describe('DAP Bridge', function () {
       await session.customRequest('disconnect', {});
 
       await terminatedPromise;
-      assert.ok(true, 'onDidTerminateDebugSession fired after disconnect');
+      assert.strictEqual(terminatedFired, true,
+        'onDidTerminateDebugSession should fire on disconnect');
     });
 
     it('setExceptionBreakpoints succeeds', async function () {

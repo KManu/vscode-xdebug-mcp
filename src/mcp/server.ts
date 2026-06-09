@@ -688,3 +688,87 @@ export function makeServer(options: { version?: string } = {}): McpServer {
 
   return server;
 }
+
+// === Exported output schemas for integration test validation ===
+// These mirror the structuredContent shapes produced by each tool.
+
+export const outputSchemas = {
+  setBreakpoint: z.object({
+    success: z.literal(true),
+    results: z.array(z.object({
+      verified: z.boolean(),
+      message: z.string().optional(),
+    })),
+  }),
+  setLogpoint: z.object({
+    success: z.literal(true),
+    results: z.array(z.object({
+      verified: z.boolean(),
+      message: z.string().optional(),
+    })),
+  }),
+  status: z.object({
+    success: z.literal(true),
+    status: z.object({
+      session: z.object({
+        id: z.string(),
+        name: z.string(),
+        type: z.string(),
+        workspaceFolder: z.string().optional(),
+      }),
+      stopped: z.boolean(),
+      threadId: z.number().optional(),
+      threads: z.array(z.object({
+        id: z.number(),
+        name: z.string(),
+      })).optional(),
+    }),
+  }),
+  stack: z.object({
+    success: z.literal(true),
+    frames: z.array(z.object({
+      id: z.number(),
+      name: z.string(),
+      line: z.number(),
+      column: z.number().optional(),
+      source: z.unknown().optional(),
+    })),
+  }),
+  scopes: z.object({
+    success: z.literal(true),
+    scopes: z.array(z.object({
+      name: z.string(),
+      variablesReference: z.number(),
+      expensive: z.boolean().optional(),
+    })),
+  }),
+  variables: z.object({
+    success: z.literal(true),
+    variables: z.array(z.object({
+      name: z.string(),
+      value: z.string(),
+      type: z.string().optional(),
+      variablesReference: z.number().optional(),
+    })),
+  }),
+  waitForStop: z.object({
+    success: z.literal(true),
+    stopped: z.literal(true),
+    frame: z.object({
+      id: z.number(),
+      name: z.string(),
+      line: z.number(),
+    }),
+  }),
+  listSessions: z.object({
+    success: z.literal(true),
+    sessions: z.array(z.object({
+      id: z.string(),
+      name: z.string(),
+      type: z.string(),
+      workspaceFolder: z.string().optional(),
+    })),
+  }),
+} as const;
+
+export type OutputSchemaName = keyof typeof outputSchemas;
