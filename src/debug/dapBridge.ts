@@ -65,6 +65,18 @@ const sessionRegistry = new Map<string, vscode.DebugSession>();
 const mcpFileBreakpoints = new Map<string, vscode.SourceBreakpoint[]>();
 let mcpFunctionBreakpoints: vscode.FunctionBreakpoint[] = [];
 
+/** Tracks pending breakpoint verifications keyed by vscode.SourceBreakpoint reference. */
+const pendingFileVerifications = new WeakMap<
+  vscode.SourceBreakpoint,
+  { resolve: (result: BreakpointUpdate) => void; reject: (err: Error) => void }
+>();
+
+/** Tracks pending function breakpoint verifications. */
+const pendingFuncVerifications = new WeakMap<
+  vscode.FunctionBreakpoint,
+  { resolve: (result: BreakpointUpdate) => void; reject: (err: Error) => void }
+>();
+
 function trackSession(session: vscode.DebugSession): void {
   sessionRegistry.set(session.id, session);
 }
@@ -165,6 +177,95 @@ export function registerSessionTracking(subscriptions: vscode.Disposable[]): voi
     vscode.debug.onDidChangeActiveDebugSession(session => {
       if (session) {
         trackSession(session);
+      }
+    })
+  );
+
+  // Track real breakpoint verification status via onDidChangeBreakpoints.
+  subscriptions.push(
+    vscode.debug.onDidChangeBreakpoints(async (event) => {
+      const session = vscode.debug.activeDebugSession;
+      if (!session) { return; }
+
+      for (const bp of event.added) {
+        if (bp instanceof vscode.SourceBreakpoint && pendingFileVerifications.has(bp)) {
+          const { resolve } = pendingFileVerifications.get(bp)!;
+          pendingFileVerifications.delete(bp);
+          try {
+            const dapBp = await session.getDebugProtocolBreakpoint(bp);
+            const verified = (dapBp as Record<string, unknown>)?.verified;
+            resolve({
+              verified: verified !== false,
+              message: (dapBp as Record<string, unknown>)?.message as string | undefined,
+            });
+          } catch (err) {
+            log.error(`[dapBridge] getDebugProtocolBreakpoint failed: ${err instanceof Error ? err.message : String(err)}`);
+            resolve({ verified: true, message: 'Verification unavailable (inline adapter fallback)' });
+          }
+        }
+
+        if (bp instanceof vscode.FunctionBreakpoint && pendingFuncVerifications.has(bp)) {
+          const { resolve } = pendingFuncVerifications.get(bp)!;
+          pendingFuncVerifications.delete(bp);
+          try {
+            const dapBp = await session.getDebugProtocolBreakpoint(bp);
+            const verified = (dapBp as Record<string, unknown>)?.verified;
+            resolve({
+              verified: verified !== false,
+              message: (dapBp as Record<string, unknown>)?.message as string | undefined,
+            });
+          } catch (err) {
+            log.error(`[dapBridge] getDebugProtocolBreakpoint failed: ${err instanceof Error ? err.message : String(err)}`);
+            resolve({ verified: true, message: 'Verification unavailable (inline adapter fallback)' });
+          }
+        }
+      }
+
+      // Handle changed breakpoints (async verification transitions, e.g. unverified→verified)
+      for (const bp of event.changed) {
+        if (bp instanceof vscode.SourceBreakpoint && pendingFileVerifications.has(bp)) {
+          const { resolve } = pendingFileVerifications.get(bp)!;
+          pendingFileVerifications.delete(bp);
+          try {
+            const dapBp = await session.getDebugProtocolBreakpoint(bp);
+            const verified = (dapBp as Record<string, unknown>)?.verified;
+            resolve({
+              verified: verified !== false,
+              message: (dapBp as Record<string, unknown>)?.message as string | undefined,
+            });
+          } catch (err) {
+            log.error(`[dapBridge] getDebugProtocolBreakpoint failed: ${err instanceof Error ? err.message : String(err)}`);
+            resolve({ verified: true, message: 'Verification unavailable (inline adapter fallback)' });
+          }
+        }
+        if (bp instanceof vscode.FunctionBreakpoint && pendingFuncVerifications.has(bp)) {
+          const { resolve } = pendingFuncVerifications.get(bp)!;
+          pendingFuncVerifications.delete(bp);
+          try {
+            const dapBp = await session.getDebugProtocolBreakpoint(bp);
+            const verified = (dapBp as Record<string, unknown>)?.verified;
+            resolve({
+              verified: verified !== false,
+              message: (dapBp as Record<string, unknown>)?.message as string | undefined,
+            });
+          } catch (err) {
+            log.error(`[dapBridge] getDebugProtocolBreakpoint failed: ${err instanceof Error ? err.message : String(err)}`);
+            resolve({ verified: true, message: 'Verification unavailable (inline adapter fallback)' });
+          }
+        }
+      }
+
+      for (const bp of event.removed) {
+        if (bp instanceof vscode.SourceBreakpoint) {
+          const entry = pendingFileVerifications.get(bp);
+          if (entry) { entry.resolve({ verified: false, message: 'Breakpoint removed before verification' }); }
+          pendingFileVerifications.delete(bp);
+        }
+        if (bp instanceof vscode.FunctionBreakpoint) {
+          const entry = pendingFuncVerifications.get(bp);
+          if (entry) { entry.resolve({ verified: false, message: 'Breakpoint removed before verification' }); }
+          pendingFuncVerifications.delete(bp);
+        }
       }
     })
   );
@@ -274,12 +375,27 @@ export async function stack(options: {
 } = {}): Promise<StackFrame[]> {
   const session = getSession(options.sessionId);
   try {
-    const response = (await session.customRequest('stackTrace', {
-      threadId: options.threadId ?? 1,
+    // Resolve threadId: default 1 works for mock, real Xdebug needs actual ID.
+    let threadId = options.threadId ?? 0;
+    if (!options.threadId) {
+      try {
+        const threadsResp = (await session.customRequest('threads')) as { threads?: { id: number }[] } | { body?: { threads?: { id: number }[] } };
+        const threads = (threadsResp as any).threads ?? (threadsResp as any).body?.threads ?? [];
+        if (threads.length > 0) { threadId = threads[0].id; }
+      } catch { threadId = 0; }
+    }
+    const raw = await session.customRequest('stackTrace', {
+      threadId,
       startFrame: options.startFrame ?? 0,
-      levels: options.levels
-    })) as { stackFrames?: StackFrame[] };
-    return Array.isArray(response?.stackFrames) ? response.stackFrames : [];
+      levels: options.levels ?? 20
+    });
+    // Real DAP adapters may wrap response in a body property.
+    const response = raw as { stackFrames?: StackFrame[]; body?: { stackFrames?: StackFrame[] } };
+    const frames = response.stackFrames ?? response.body?.stackFrames;
+    if (!Array.isArray(frames)) {
+      log.error(`[dapBridge] Unexpected stackTrace response shape: ${JSON.stringify(raw)}`);
+    }
+    return Array.isArray(frames) ? frames : [];
   } catch (error) {
     if (isNotStoppedError(error)) {
       throw new Error('Debug session is not stopped. Call wait_for_stop to block until a breakpoint is hit, or pause to interrupt execution.');
@@ -389,6 +505,20 @@ export async function setFileBreakpoints(options: {
     return new vscode.SourceBreakpoint(location, true, breakpoint.condition, breakpoint.hitCondition, breakpoint.logMessage);
   });
 
+  const verificationTimeoutMs = 5000;
+  const verificationPromises = sourceBreakpoints.map(
+    (bp) =>
+      new Promise<BreakpointUpdate>((resolve) => {
+        pendingFileVerifications.set(bp, { resolve, reject: () => resolve({ verified: false, message: 'Verification rejected' }) });
+        setTimeout(() => {
+          if (pendingFileVerifications.has(bp)) {
+            pendingFileVerifications.delete(bp);
+            resolve({ verified: false, message: 'Verification timeout' });
+          }
+        }, verificationTimeoutMs);
+      })
+  );
+
   if (sourceBreakpoints.length > 0) {
     vscode.debug.addBreakpoints(sourceBreakpoints);
     mcpFileBreakpoints.set(key, sourceBreakpoints);
@@ -396,7 +526,7 @@ export async function setFileBreakpoints(options: {
     mcpFileBreakpoints.delete(key);
   }
 
-  return sourceBreakpoints.map(() => ({ verified: true }));
+  return Promise.all(verificationPromises);
 }
 
 // Function breakpoints are keyed by function name.
@@ -412,12 +542,27 @@ export async function setFunctionBreakpoints(options: {
     return new vscode.FunctionBreakpoint(breakpoint.name, true, breakpoint.condition, breakpoint.hitCondition);
   });
 
+  mcpFunctionBreakpoints = functionBreakpoints;
+
+  const verificationTimeoutMs = 5000;
+  const verificationPromises = functionBreakpoints.map(
+    (bp) =>
+      new Promise<BreakpointUpdate>((resolve) => {
+        pendingFuncVerifications.set(bp, { resolve, reject: () => resolve({ verified: false, message: 'Verification rejected' }) });
+        setTimeout(() => {
+          if (pendingFuncVerifications.has(bp)) {
+            pendingFuncVerifications.delete(bp);
+            resolve({ verified: false, message: 'Verification timeout' });
+          }
+        }, verificationTimeoutMs);
+      })
+  );
+
   if (functionBreakpoints.length > 0) {
     vscode.debug.addBreakpoints(functionBreakpoints);
   }
 
-  mcpFunctionBreakpoints = functionBreakpoints;
-  return functionBreakpoints.map(() => ({ verified: true }));
+  return Promise.all(verificationPromises);
 }
 
 // Exception filters are adapter-specific and depend on Xdebug capabilities.

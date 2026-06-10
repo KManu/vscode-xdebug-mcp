@@ -9,6 +9,10 @@ import { vi } from 'vitest';
 vi.mock('vscode', async () => {
   // Inline the mock factory here since vi.hoisted isn't available in setupFiles
   // and we can't import from mockVscode.ts before vi.mock resolves.
+
+  // Shared listener list so addBreakpoints can fire onDidChangeBreakpoints callbacks.
+  const bpChangeListeners: Array<(event: any) => void> = [];
+
   const mockUri = {
     file: vi.fn().mockImplementation((filePath: string) => ({
       fsPath: filePath,
@@ -68,7 +72,16 @@ vi.mock('vscode', async () => {
       onDidStartDebugSession: vi.fn(),
       onDidTerminateDebugSession: vi.fn(),
       onDidChangeActiveDebugSession: vi.fn(),
-      addBreakpoints: vi.fn(),
+      onDidChangeBreakpoints: vi.fn((listener: any) => {
+        bpChangeListeners.push(listener);
+        return { dispose: vi.fn(() => { const idx = bpChangeListeners.indexOf(listener); if (idx >= 0) bpChangeListeners.splice(idx, 1); }) };
+      }),
+      addBreakpoints: vi.fn((bps: any[]) => {
+        // Fire onDidChangeBreakpoints callbacks so pending verifications resolve synchronously.
+        for (const listener of bpChangeListeners) {
+          listener({ added: bps, changed: [], removed: [] });
+        }
+      }),
       removeBreakpoints: vi.fn(),
     },
     workspace: {
@@ -79,18 +92,18 @@ vi.mock('vscode', async () => {
     },
     Position: vi.fn().mockImplementation((line: number, character: number) => ({ line, character })),
     Location: vi.fn().mockImplementation((uri: any, position: any) => ({ uri, range: { start: position, end: position } })),
-    SourceBreakpoint: vi.fn().mockImplementation((location: any, enabled?: boolean, condition?: string, hitCondition?: string, logMessage?: string) => ({
-      location,
-      enabled: enabled ?? true,
-      condition,
-      hitCondition,
-      logMessage,
-    })),
-    FunctionBreakpoint: vi.fn().mockImplementation((name: string, enabled?: boolean, condition?: string, hitCondition?: string) => ({
-      name,
-      enabled: enabled ?? true,
-      condition,
-      hitCondition,
-    })),
+    // Use real class constructors so instanceof checks work in dapBridge.ts onDidChangeBreakpoints.
+    SourceBreakpoint: class {
+      location: any; enabled: boolean; condition?: string; hitCondition?: string; logMessage?: string;
+      constructor(location: any, enabled: boolean = true, condition?: string, hitCondition?: string, logMessage?: string) {
+        this.location = location; this.enabled = enabled; this.condition = condition; this.hitCondition = hitCondition; this.logMessage = logMessage;
+      }
+    } as any,
+    FunctionBreakpoint: class {
+      name: string; enabled: boolean; condition?: string; hitCondition?: string;
+      constructor(name: string, enabled: boolean = true, condition?: string, hitCondition?: string) {
+        this.name = name; this.enabled = enabled; this.condition = condition; this.hitCondition = hitCondition;
+      }
+    } as any,
   };
 });

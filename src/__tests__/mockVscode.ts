@@ -71,7 +71,7 @@ export function createMockDebugSession(overrides?: Partial<MockDebugSession>): M
     workspaceFolder: undefined,
     customRequest: vi.fn().mockResolvedValue({}),
     configuration: {},
-    getDebugProtocolBreakpoint: vi.fn(),
+    getDebugProtocolBreakpoint: vi.fn().mockResolvedValue({ verified: true }),
     ...overrides,
   };
 }

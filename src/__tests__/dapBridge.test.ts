@@ -218,6 +218,7 @@ describe('dapBridge session resolution', () => {
 describe('dapBridge path resolution (resolveFileUri via setFileBreakpoints)', () => {
   beforeEach(() => {
     dapBridge.__clearSessionsForTesting();
+    dapBridge.registerSessionTracking([]);
     vscode.debug.activeDebugSession = undefined;
     // Reset workspace folders
     // Reset workspace folders using Object.defineProperty to bypass readonly
@@ -370,6 +371,7 @@ describe('dapBridge breakpoint lifecycle', () => {
   beforeEach(() => {
     dapBridge.__clearSessionsForTesting();
     dapBridge.__clearBreakpointsForTesting();
+    dapBridge.registerSessionTracking([]);
     vscode.debug.activeDebugSession = undefined;
     Object.defineProperty(vscode.workspace, 'workspaceFolders', {
       value: undefined,
