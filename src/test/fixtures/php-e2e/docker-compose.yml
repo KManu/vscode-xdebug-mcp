@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  php:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: xdebug-mcp-e2e:latest
+    container_name: xdebug-e2e-php
+    environment:
+      - XDEBUG_MODE=debug
+      - XDEBUG_START_WITH_REQUEST=yes
+      - XDEBUG_CLIENT_HOST=host.docker.internal
+      - XDEBUG_CLIENT_PORT=9003
+      - XDEBUG_IDEKEY=VSCODE
+    volumes:
+      - ./scripts:/app/scripts:ro
+      - xdebug_logs:/tmp
+    working_dir: /app
+    network_mode: host
+    stdin_open: true
+    tty: true
+
+volumes:
+  xdebug_logs:

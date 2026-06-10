@@ -6,11 +6,12 @@ const testWorkspace = path.resolve(__dirname, 'src/test/fixtures/test-workspace'
 
 module.exports = defineConfig({
   files: 'out/test/src/test/suite/**/*.test.js',
-  version: '1.122.0',
+  version: 'insiders',
   workspaceFolder: testWorkspace,
+  installExtensions: ['xdebug.php-debug'],
   mocha: {
     ui: 'bdd',
-    timeout: 30000,
+    timeout: 90000,
     color: true,
     require: path.resolve(__dirname, 'out/test/src/test/setup.js'),
   },
