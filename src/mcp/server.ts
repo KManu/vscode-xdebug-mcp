@@ -2,32 +2,45 @@ import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mc
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import * as dap from '../debug/dapBridge';
+import { isNotStoppedError } from '../debug/errors';
 
 // Optional session selector. Agents can target a specific debug session by id.
 const sessionIdSchema = z.string().min(1).optional();
 
 // Convenience helpers for the MCP SDK response shape.
-function okResult(): CallToolResult {
-  return { content: [{ type: 'text', text: 'ok' }] };
+function okResult(): CallToolResult & { structuredContent: Record<string, unknown> } {
+  return {
+    content: [{ type: 'text', text: 'ok' }],
+    structuredContent: { success: true }
+  };
 }
 
 function structuredResult(
   structuredContent: Record<string, unknown>
 ): CallToolResult & { structuredContent: Record<string, unknown> } {
   return {
-    content: [{ type: 'text', text: JSON.stringify(structuredContent) }],
-    structuredContent
+    content: [{ type: 'text', text: JSON.stringify({ success: true, ...structuredContent }) }],
+    structuredContent: { success: true, ...structuredContent }
   };
 }
 
-function isNotStoppedError(error: unknown): boolean {
+function errorResult(error: unknown): CallToolResult & { structuredContent: Record<string, unknown> } {
   const message = error instanceof Error ? error.message : String(error);
-  if (message.includes('notStopped')) {
-    return true;
-  }
+  return {
+    content: [{ type: 'text', text: message }],
+    structuredContent: { success: false, error: message }
+  };
+}
 
-  const errorWithBody = error as { body?: { error?: { id?: string } } };
-  return errorWithBody?.body?.error?.id === 'notStopped';
+// Higher-order wrapper that catches errors and converts them to structured error results.
+function safeHandler(fn: (...args: any[]) => Promise<any>): (...args: any[]) => Promise<any> {
+  return async (...args) => {
+    try {
+      return await fn(...args);
+    } catch (error) {
+      return errorResult(error);
+    }
+  };
 }
 
 // MCP server maps tool calls to DAP requests through the bridge.
@@ -111,9 +124,9 @@ export function makeServer(options: { version?: string } = {}): McpServer {
       description: 'List resource templates exposed by this MCP server',
       inputSchema: {}
     },
-    async (): Promise<CallToolResult & { structuredContent: unknown }> => {
+    safeHandler(async (): Promise<CallToolResult & { structuredContent: unknown }> => {
       return structuredResult({ templates: resourceTemplates });
-    }
+    })
   );
 
   server.registerPrompt(
@@ -150,10 +163,10 @@ export function makeServer(options: { version?: string } = {}): McpServer {
       description: 'List known debug sessions',
       inputSchema: {}
     },
-    async (): Promise<CallToolResult & { structuredContent: unknown }> => {
+    safeHandler(async (): Promise<CallToolResult & { structuredContent: unknown }> => {
       const sessions = await dap.listSessions();
       return structuredResult({ sessions });
-    }
+    })
   );
 
   server.registerTool(
@@ -165,10 +178,67 @@ export function makeServer(options: { version?: string } = {}): McpServer {
         sessionId: sessionIdSchema
       }
     },
-    async ({ sessionId }): Promise<CallToolResult & { structuredContent: unknown }> => {
+    safeHandler(async ({ sessionId }): Promise<CallToolResult & { structuredContent: unknown }> => {
       const info = await dap.status(sessionId);
       return structuredResult({ status: info });
-    }
+    })
+  );
+
+  server.registerTool(
+    'diagnostics',
+    {
+      title: 'Diagnostics',
+      description: 'Report MCP server health and Xdebug configuration status',
+      inputSchema: {
+        sessionId: sessionIdSchema
+      }
+    },
+    safeHandler(async ({ sessionId }): Promise<CallToolResult & { structuredContent: unknown }> => {
+      const sessions = await dap.listSessions();
+      const hasActiveSession = sessions.length > 0;
+
+      let sessionStatus: dap.DebugStatus | null = null;
+      if (hasActiveSession) {
+        try {
+          sessionStatus = await dap.status(sessionId);
+        } catch {
+          // Session may have died between listSessions and status
+        }
+      }
+
+      const recommendations: string[] = [];
+      if (!hasActiveSession) {
+        recommendations.push(
+          'No active debug session. Start a PHP/Xdebug debug session in VS Code (F5).'
+        );
+        recommendations.push(
+          'Ensure Xdebug is configured with xdebug.mode=debug and xdebug.client_port matches launch.json.'
+        );
+      } else if (sessionStatus && !sessionStatus.stopped) {
+        recommendations.push(
+          'Debug session is running. Set a breakpoint and trigger a PHP request to stop execution.'
+        );
+        recommendations.push(
+          'Use wait_for_stop to block until a breakpoint is hit, or pause to interrupt.'
+        );
+      } else if (sessionStatus && sessionStatus.stopped) {
+        recommendations.push(
+          'Debug session is stopped and ready for inspection. Use stack, scopes, variables, or snapshot to inspect state.'
+        );
+      }
+
+      return structuredResult({
+        server: 'running',
+        version: serverVersion,
+        sessions: sessions.map(s => ({ id: s.id, name: s.name, type: s.type })),
+        sessionCount: sessions.length,
+        hasActiveSession,
+        sessionStopped: sessionStatus?.stopped ?? false,
+        threadId: sessionStatus?.threadId,
+        threadCount: sessionStatus?.threads?.length ?? 0,
+        recommendations
+      });
+    })
   );
 
   // Thread/stack introspection for multi-threaded debuggers.
@@ -181,10 +251,10 @@ export function makeServer(options: { version?: string } = {}): McpServer {
         sessionId: sessionIdSchema
       }
     },
-    async ({ sessionId }): Promise<CallToolResult & { structuredContent: unknown }> => {
+    safeHandler(async ({ sessionId }): Promise<CallToolResult & { structuredContent: unknown }> => {
       const threads = await dap.threads(sessionId);
       return structuredResult({ threads });
-    }
+    })
   );
 
   // Stack/variable tooling makes it easy for agents to inspect state.
@@ -200,10 +270,10 @@ export function makeServer(options: { version?: string } = {}): McpServer {
         levels: z.number().int().positive().optional()
       }
     },
-    async ({ sessionId, threadId, startFrame, levels }): Promise<CallToolResult & { structuredContent: unknown }> => {
+    safeHandler(async ({ sessionId, threadId, startFrame, levels }): Promise<CallToolResult & { structuredContent: unknown }> => {
       const frames = await dap.stack({ sessionId, threadId, startFrame, levels });
       return structuredResult({ frames });
-    }
+    })
   );
 
   server.registerTool(
@@ -213,13 +283,13 @@ export function makeServer(options: { version?: string } = {}): McpServer {
       description: 'List scopes for a stack frame',
       inputSchema: {
         sessionId: sessionIdSchema,
-        frameId: z.number().int().positive()
+        frameId: z.number().int().min(0)
       }
     },
-    async ({ sessionId, frameId }): Promise<CallToolResult & { structuredContent: unknown }> => {
+    safeHandler(async ({ sessionId, frameId }): Promise<CallToolResult & { structuredContent: unknown }> => {
       const scopes = await dap.scopes(frameId, sessionId);
       return structuredResult({ scopes });
-    }
+    })
   );
 
   server.registerTool(
@@ -235,10 +305,10 @@ export function makeServer(options: { version?: string } = {}): McpServer {
         filter: z.enum(['indexed', 'named']).optional()
       }
     },
-    async ({ sessionId, variablesReference, start, count, filter }): Promise<CallToolResult & { structuredContent: unknown }> => {
+    safeHandler(async ({ sessionId, variablesReference, start, count, filter }): Promise<CallToolResult & { structuredContent: unknown }> => {
       const variables = await dap.variables({ sessionId, variablesReference, start, count, filter });
       return structuredResult({ variables });
-    }
+    })
   );
 
   // Snapshot bundles top frame + scopes + variables in one call to reduce round trips.
@@ -254,7 +324,7 @@ export function makeServer(options: { version?: string } = {}): McpServer {
         maxVariables: z.number().int().positive().optional()
       }
     },
-    async ({ sessionId, threadId, includeExpensive, maxVariables }): Promise<CallToolResult & { structuredContent: unknown }> => {
+    safeHandler(async ({ sessionId, threadId, includeExpensive, maxVariables }): Promise<CallToolResult & { structuredContent: unknown }> => {
       const frames = await dap.stack({ sessionId, threadId, startFrame: 0, levels: 1 });
       const frame = frames[0];
 
@@ -278,7 +348,7 @@ export function makeServer(options: { version?: string } = {}): McpServer {
       }
 
       return structuredResult({ frame, scopes: scopedVariables });
-    }
+    })
   );
 
   // Execution control.
@@ -292,10 +362,10 @@ export function makeServer(options: { version?: string } = {}): McpServer {
         threadId: z.number().int().positive().optional()
       }
     },
-    async ({ sessionId, threadId }): Promise<CallToolResult> => {
+    safeHandler(async ({ sessionId, threadId }): Promise<CallToolResult> => {
       await dap.cont({ sessionId, threadId });
       return okResult();
-    }
+    })
   );
 
   server.registerTool(
@@ -308,10 +378,10 @@ export function makeServer(options: { version?: string } = {}): McpServer {
         threadId: z.number().int().positive().optional()
       }
     },
-    async ({ sessionId, threadId }): Promise<CallToolResult> => {
+    safeHandler(async ({ sessionId, threadId }): Promise<CallToolResult> => {
       await dap.pause({ sessionId, threadId });
       return okResult();
-    }
+    })
   );
 
   server.registerTool(
@@ -324,10 +394,10 @@ export function makeServer(options: { version?: string } = {}): McpServer {
         threadId: z.number().int().positive().optional()
       }
     },
-    async ({ sessionId, threadId }): Promise<CallToolResult> => {
+    safeHandler(async ({ sessionId, threadId }): Promise<CallToolResult> => {
       await dap.next({ sessionId, threadId });
       return okResult();
-    }
+    })
   );
 
   server.registerTool(
@@ -340,10 +410,10 @@ export function makeServer(options: { version?: string } = {}): McpServer {
         threadId: z.number().int().positive().optional()
       }
     },
-    async ({ sessionId, threadId }): Promise<CallToolResult> => {
+    safeHandler(async ({ sessionId, threadId }): Promise<CallToolResult> => {
       await dap.stepIn({ sessionId, threadId });
       return okResult();
-    }
+    })
   );
 
   server.registerTool(
@@ -356,10 +426,10 @@ export function makeServer(options: { version?: string } = {}): McpServer {
         threadId: z.number().int().positive().optional()
       }
     },
-    async ({ sessionId, threadId }): Promise<CallToolResult> => {
+    safeHandler(async ({ sessionId, threadId }): Promise<CallToolResult> => {
       await dap.stepOut({ sessionId, threadId });
       return okResult();
-    }
+    })
   );
 
   server.registerTool(
@@ -371,10 +441,10 @@ export function makeServer(options: { version?: string } = {}): McpServer {
         sessionId: sessionIdSchema
       }
     },
-    async ({ sessionId }): Promise<CallToolResult> => {
-      await dap.restart(sessionId);
+    safeHandler(async ({ sessionId }): Promise<CallToolResult> => {
+      await dap.restart({ sessionId });
       return okResult();
-    }
+    })
   );
 
   server.registerTool(
@@ -387,10 +457,10 @@ export function makeServer(options: { version?: string } = {}): McpServer {
         restart: z.boolean().optional()
       }
     },
-    async ({ sessionId, restart }): Promise<CallToolResult> => {
+    safeHandler(async ({ sessionId, restart }): Promise<CallToolResult> => {
       await dap.terminate({ sessionId, restart });
       return okResult();
-    }
+    })
   );
 
   server.registerTool(
@@ -405,10 +475,10 @@ export function makeServer(options: { version?: string } = {}): McpServer {
         suspendDebuggee: z.boolean().optional()
       }
     },
-    async ({ sessionId, terminateDebuggee, restart, suspendDebuggee }): Promise<CallToolResult> => {
+    safeHandler(async ({ sessionId, terminateDebuggee, restart, suspendDebuggee }): Promise<CallToolResult> => {
       await dap.disconnect({ sessionId, terminateDebuggee, restart, suspendDebuggee });
       return okResult();
-    }
+    })
   );
 
   // Breakpoint management.
@@ -438,16 +508,16 @@ export function makeServer(options: { version?: string } = {}): McpServer {
         )
       }
     },
-    async ({ sessionId, file, breakpoints }): Promise<CallToolResult & { structuredContent: unknown }> => {
+    safeHandler(async ({ sessionId, file, breakpoints }): Promise<CallToolResult & { structuredContent: unknown }> => {
       const result = await dap.setFileBreakpoints({ sessionId, file, breakpoints });
       const structuredContent = {
-        results: result.map(item => ({
+        results: result.map((item: { verified?: boolean; message?: string }) => ({
           verified: !!item.verified,
           message: item.message
         }))
       };
       return structuredResult(structuredContent);
-    }
+    })
   );
 
   server.registerTool(
@@ -476,8 +546,8 @@ export function makeServer(options: { version?: string } = {}): McpServer {
         )
       }
     },
-    async ({ sessionId, file, logpoints }): Promise<CallToolResult & { structuredContent: unknown }> => {
-      const breakpoints = logpoints.map(item => ({
+    safeHandler(async ({ sessionId, file, logpoints }): Promise<CallToolResult & { structuredContent: unknown }> => {
+      const breakpoints = logpoints.map((item: { line: number; logMessage: string; condition?: string; hitCondition?: string }) => ({
         line: item.line,
         logMessage: item.logMessage,
         condition: item.condition,
@@ -485,13 +555,13 @@ export function makeServer(options: { version?: string } = {}): McpServer {
       }));
       const result = await dap.setFileBreakpoints({ sessionId, file, breakpoints });
       const structuredContent = {
-        results: result.map(item => ({
+        results: result.map((item: { verified?: boolean; message?: string }) => ({
           verified: !!item.verified,
           message: item.message
         }))
       };
       return structuredResult(structuredContent);
-    }
+    })
   );
 
   server.registerTool(
@@ -504,10 +574,10 @@ export function makeServer(options: { version?: string } = {}): McpServer {
         file: z.string()
       }
     },
-    async ({ sessionId, file }): Promise<CallToolResult & { structuredContent: unknown }> => {
+    safeHandler(async ({ sessionId, file }): Promise<CallToolResult & { structuredContent: unknown }> => {
       const result = await dap.clearFileBreakpoints({ sessionId, file });
       return structuredResult({ results: result });
-    }
+    })
   );
 
   server.registerTool(
@@ -526,10 +596,10 @@ export function makeServer(options: { version?: string } = {}): McpServer {
         )
       }
     },
-    async ({ sessionId, breakpoints }): Promise<CallToolResult & { structuredContent: unknown }> => {
+    safeHandler(async ({ sessionId, breakpoints }): Promise<CallToolResult & { structuredContent: unknown }> => {
       const results = await dap.setFunctionBreakpoints({ sessionId, breakpoints });
       return structuredResult({ results });
-    }
+    })
   );
 
   server.registerTool(
@@ -543,10 +613,10 @@ export function makeServer(options: { version?: string } = {}): McpServer {
         exceptionOptions: z.array(z.unknown()).optional()
       }
     },
-    async ({ sessionId, filters, exceptionOptions }): Promise<CallToolResult & { structuredContent: unknown }> => {
+    safeHandler(async ({ sessionId, filters, exceptionOptions }): Promise<CallToolResult & { structuredContent: unknown }> => {
       const results = await dap.setExceptionBreakpoints({ sessionId, filters, exceptionOptions });
       return structuredResult({ results });
-    }
+    })
   );
 
   server.registerTool(
@@ -557,12 +627,12 @@ export function makeServer(options: { version?: string } = {}): McpServer {
       inputSchema: {
         sessionId: sessionIdSchema,
         expr: z.string(),
-        frameId: z.number().int().positive().optional(),
+        frameId: z.number().int().min(0).optional(),
         context: z.enum(['watch', 'repl', 'hover', 'clipboard']).optional(),
         threadId: z.number().int().positive().optional()
       }
     },
-    async ({ sessionId, expr, frameId, context, threadId }): Promise<CallToolResult & { structuredContent: unknown }> => {
+    safeHandler(async ({ sessionId, expr, frameId, context, threadId }): Promise<CallToolResult & { structuredContent: unknown }> => {
       let resolvedFrameId = frameId;
       if (!resolvedFrameId) {
         const frames = await dap.stack({ sessionId, threadId, startFrame: 0, levels: 1 });
@@ -570,7 +640,7 @@ export function makeServer(options: { version?: string } = {}): McpServer {
       }
       const evaluation = await dap.evaluate({ sessionId, expression: expr, frameId: resolvedFrameId, context });
       return structuredResult(evaluation);
-    }
+    })
   );
 
   server.registerTool(
@@ -581,10 +651,13 @@ export function makeServer(options: { version?: string } = {}): McpServer {
       inputSchema: {
         sessionId: sessionIdSchema,
         threadId: z.number().int().positive().optional(),
-        pollMs: z.number().int().positive().default(300)
+        pollMs: z.number().int().positive().default(300),
+        timeoutMs: z.number().int().positive().optional().default(30000)
       }
     },
-    async ({ sessionId, threadId, pollMs }): Promise<CallToolResult & { structuredContent: unknown }> => {
+    safeHandler(async ({ sessionId, threadId, pollMs, timeoutMs }): Promise<CallToolResult & { structuredContent: unknown }> => {
+      const deadline = Date.now() + (timeoutMs ?? 30000);
+
       const poll = async () => {
         try {
           const frames = await dap.stack({ sessionId, threadId, startFrame: 0, levels: 1 });
@@ -599,13 +672,103 @@ export function makeServer(options: { version?: string } = {}): McpServer {
 
       let frame = await poll();
       while (!frame) {
+        if (Date.now() > deadline) {
+          return errorResult(
+            new Error(`Timed out waiting for debugger to stop after ${timeoutMs ?? 30000}ms. ` +
+                      'Ensure Xdebug is configured, a PHP request was triggered, and a breakpoint is set.')
+          );
+        }
         await new Promise(resolve => setTimeout(resolve, pollMs));
         frame = await poll();
       }
 
       return structuredResult({ stopped: true, frame });
-    }
+    })
   );
 
   return server;
 }
+
+// === Exported output schemas for integration test validation ===
+// These mirror the structuredContent shapes produced by each tool.
+
+export const outputSchemas = {
+  setBreakpoint: z.object({
+    success: z.literal(true),
+    results: z.array(z.object({
+      verified: z.boolean(),
+      message: z.string().optional(),
+    })),
+  }),
+  setLogpoint: z.object({
+    success: z.literal(true),
+    results: z.array(z.object({
+      verified: z.boolean(),
+      message: z.string().optional(),
+    })),
+  }),
+  status: z.object({
+    success: z.literal(true),
+    status: z.object({
+      session: z.object({
+        id: z.string(),
+        name: z.string(),
+        type: z.string(),
+        workspaceFolder: z.string().optional(),
+      }),
+      stopped: z.boolean(),
+      threadId: z.number().optional(),
+      threads: z.array(z.object({
+        id: z.number(),
+        name: z.string(),
+      })).optional(),
+    }),
+  }),
+  stack: z.object({
+    success: z.literal(true),
+    frames: z.array(z.object({
+      id: z.number(),
+      name: z.string(),
+      line: z.number(),
+      column: z.number().optional(),
+      source: z.unknown().optional(),
+    })),
+  }),
+  scopes: z.object({
+    success: z.literal(true),
+    scopes: z.array(z.object({
+      name: z.string(),
+      variablesReference: z.number(),
+      expensive: z.boolean().optional(),
+    })),
+  }),
+  variables: z.object({
+    success: z.literal(true),
+    variables: z.array(z.object({
+      name: z.string(),
+      value: z.string(),
+      type: z.string().optional(),
+      variablesReference: z.number().optional(),
+    })),
+  }),
+  waitForStop: z.object({
+    success: z.literal(true),
+    stopped: z.literal(true),
+    frame: z.object({
+      id: z.number(),
+      name: z.string(),
+      line: z.number(),
+    }),
+  }),
+  listSessions: z.object({
+    success: z.literal(true),
+    sessions: z.array(z.object({
+      id: z.string(),
+      name: z.string(),
+      type: z.string(),
+      workspaceFolder: z.string().optional(),
+    })),
+  }),
+} as const;
+
+export type OutputSchemaName = keyof typeof outputSchemas;

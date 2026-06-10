@@ -2,9 +2,9 @@
   "name": "vscode-xdebug-mcp",
   "displayName": "Xdebug MCP",
   "publisher": "KwabenaManu",
-  "version": "0.0.3",
+  "version": "0.1.0",
   "description": "Expose Xdebug controls to MCP-aware VS Code agents for improved PHP debugging.",
-  "icon": "./images/vscode_xdebug_mcp_icon.png",
+  "icon": "images/vscode_xdebug_mcp_icon.png",
   "pricing": "Free",
   "preview": true,
   "main": "./dist/extension.js",
@@ -25,14 +25,24 @@
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
     "vscode:prepublish": "npm run package",
     "package": "npm run check-types && node esbuild.js --production",
-    "vsce:package": "npm run package && npx vsce package"
+    "vsce:package": "npm run package && npx vsce package",
+    "test": "vitest run",
+    "test:watch": "vitest watch",
+    "compile:integration": "tsc -p tsconfig.integration.json",
+    "verify:mock-dap": "node scripts/verify-mock-dap.js",
+    "test:integration": "npm run compile:integration && npm run compile && npm run verify:mock-dap && vscode-test",
+    "test:all": "npm run compile && npm run compile:integration && npm run verify:mock-dap && npm run test && vscode-test",
+    "test:e2e": "DONT_PROMPT_WSL_INSTALL=1 npm run compile:integration && npm run compile && docker compose -f src/test/fixtures/php-e2e/docker-compose.yml up -d --build && vscode-test; docker compose -f src/test/fixtures/php-e2e/docker-compose.yml down 2>/dev/null; true"
   },
   "keywords": [
     "xdebug",
     "mcp",
     "debug"
   ],
-  "categories": ["Other", "Debuggers"],
+  "categories": [
+    "Other",
+    "Debuggers"
+  ],
   "author": "Kwabena Manu",
   "repository": {
     "type": "git",
@@ -46,6 +56,30 @@
         "id": "xdebugMcpProvider",
         "label": "Xdebug MCP Provider"
       }
+    ],
+    "debuggers": [
+      {
+        "type": "xdebug-mcp-test",
+        "label": "Xdebug MCP Test Adapter"
+      }
+    ],
+    "commands": [
+      {
+        "command": "xdebug-mcp.copyUri",
+        "title": "Xdebug MCP: Copy Server URI to Clipboard"
+      },
+      {
+        "command": "xdebug-mcp.showDiagnostics",
+        "title": "Xdebug MCP: Show Diagnostics"
+      },
+      {
+        "command": "xdebug-mcp.copyConfig",
+        "title": "Xdebug MCP: Copy MCP Client Config Snippet"
+      },
+      {
+        "command": "xdebug-mcp.addToWorkspaceMcp",
+        "title": "Xdebug MCP: Add to Workspace .vscode/mcp.json"
+      }
     ]
   },
   "dependencies": {
@@ -55,9 +89,12 @@
   "devDependencies": {
     "@types/node": "^24.9.1",
     "@types/vscode": "^1.105.0",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
     "esbuild": "^0.24.2",
     "npm-run-all": "^4.1.5",
     "typescript": "^5.9.3",
+    "vitest": "^2.0.0",
     "vsce": "^2.15.0"
   }
 }

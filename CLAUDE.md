@@ -43,6 +43,27 @@ The DAP bridge (`dapBridge.ts`) maintains a registry of debug sessions. Most too
 
 The `@types/vscode` package may not expose full debug session APIs. The extension uses `session.customRequest()` to send raw DAP commands directly to the debug adapter.
 
+## Full Architecture Documentation
+
+For deeper architecture details, component diagrams, patterns, and the complete MCP tools inventory:
+→ **See [ARCHITECTURE.md](./ARCHITECTURE.md)**
+
+### Pi Subagents (project-specific)
+
+This repo includes 4 project-scoped pi subagents in `.pi/agents/`:
+- **`xdebug-mcp.worker`** — Implementation agent; reads `ARCHITECTURE.md` automatically
+- **`xdebug-mcp.reviewer`** — Specialized reviewer for extension correctness, MCP compliance, DAP patterns
+- **`xdebug-mcp.tester`** — Test-focused agent; reads `ARCHITECTURE.md` + `PLAN.md` automatically
+- **`xdebug-mcp.php-debug`** — PHP/Xdebug debugging specialist with deep Xdebug configuration and DAP knowledge
+
+## Test Commands
+
+```bash
+npm run test         # vitest run (single pass, all 171+ tests)
+npm run test:watch   # vitest watch (continuous)
+npm run check-types  # TypeScript type checking (no emit)
+```
+
 ## Path Mappings
 
 Xdebug uses server-side file paths. The `launch.json` must include `pathMappings` to map remote paths to the local workspace so breakpoints resolve correctly. Example:
@@ -51,3 +72,5 @@ Xdebug uses server-side file paths. The `launch.json` must include `pathMappings
   "/var/www/html/project": "${workspaceFolder}"
 }
 ```
+
+See `ARCHITECTURE.md` for detailed path resolution logic, and the `xdebug-mcp.php-debug` subagent for comprehensive Xdebug configuration and troubleshooting guidance.

@@ -1,5 +1,7 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { log } from '../utils/logger';
+import { isNotStoppedError } from './errors';
 
 // Thin DAP bridge for MCP tools; keeps session selection and request shapes centralized.
 
@@ -63,6 +65,18 @@ const sessionRegistry = new Map<string, vscode.DebugSession>();
 const mcpFileBreakpoints = new Map<string, vscode.SourceBreakpoint[]>();
 let mcpFunctionBreakpoints: vscode.FunctionBreakpoint[] = [];
 
+/** Tracks pending breakpoint verifications keyed by vscode.SourceBreakpoint reference. */
+const pendingFileVerifications = new WeakMap<
+  vscode.SourceBreakpoint,
+  { resolve: (result: BreakpointUpdate) => void; reject: (err: Error) => void }
+>();
+
+/** Tracks pending function breakpoint verifications. */
+const pendingFuncVerifications = new WeakMap<
+  vscode.FunctionBreakpoint,
+  { resolve: (result: BreakpointUpdate) => void; reject: (err: Error) => void }
+>();
+
 function trackSession(session: vscode.DebugSession): void {
   sessionRegistry.set(session.id, session);
 }
@@ -95,8 +109,12 @@ async function fileExists(uri: vscode.Uri): Promise<boolean> {
   try {
     await vscode.workspace.fs.stat(uri);
     return true;
-  } catch {
-    return false;
+  } catch (error: any) {
+    // Only treat "file not found" as false; re-throw permission/IO errors.
+    if (error?.code === 'FileNotFound' || error?.code === 'ENOENT') {
+      return false;
+    }
+    throw error;
   }
 }
 
@@ -162,6 +180,122 @@ export function registerSessionTracking(subscriptions: vscode.Disposable[]): voi
       }
     })
   );
+
+  // Track real breakpoint verification status via onDidChangeBreakpoints.
+  subscriptions.push(
+    vscode.debug.onDidChangeBreakpoints(async (event) => {
+      const session = vscode.debug.activeDebugSession;
+      if (!session) { return; }
+
+      for (const bp of event.added) {
+        if (bp instanceof vscode.SourceBreakpoint && pendingFileVerifications.has(bp)) {
+          const { resolve } = pendingFileVerifications.get(bp)!;
+          pendingFileVerifications.delete(bp);
+          try {
+            const dapBp = await session.getDebugProtocolBreakpoint(bp);
+            const verified = (dapBp as Record<string, unknown>)?.verified;
+            resolve({
+              verified: verified !== false,
+              message: (dapBp as Record<string, unknown>)?.message as string | undefined,
+            });
+          } catch (err) {
+            log.error(`[dapBridge] getDebugProtocolBreakpoint failed: ${err instanceof Error ? err.message : String(err)}`);
+            resolve({ verified: true, message: 'Verification unavailable (inline adapter fallback)' });
+          }
+        }
+
+        if (bp instanceof vscode.FunctionBreakpoint && pendingFuncVerifications.has(bp)) {
+          const { resolve } = pendingFuncVerifications.get(bp)!;
+          pendingFuncVerifications.delete(bp);
+          try {
+            const dapBp = await session.getDebugProtocolBreakpoint(bp);
+            const verified = (dapBp as Record<string, unknown>)?.verified;
+            resolve({
+              verified: verified !== false,
+              message: (dapBp as Record<string, unknown>)?.message as string | undefined,
+            });
+          } catch (err) {
+            log.error(`[dapBridge] getDebugProtocolBreakpoint failed: ${err instanceof Error ? err.message : String(err)}`);
+            resolve({ verified: true, message: 'Verification unavailable (inline adapter fallback)' });
+          }
+        }
+      }
+
+      // Handle changed breakpoints (async verification transitions, e.g. unverified→verified)
+      for (const bp of event.changed) {
+        if (bp instanceof vscode.SourceBreakpoint && pendingFileVerifications.has(bp)) {
+          const { resolve } = pendingFileVerifications.get(bp)!;
+          pendingFileVerifications.delete(bp);
+          try {
+            const dapBp = await session.getDebugProtocolBreakpoint(bp);
+            const verified = (dapBp as Record<string, unknown>)?.verified;
+            resolve({
+              verified: verified !== false,
+              message: (dapBp as Record<string, unknown>)?.message as string | undefined,
+            });
+          } catch (err) {
+            log.error(`[dapBridge] getDebugProtocolBreakpoint failed: ${err instanceof Error ? err.message : String(err)}`);
+            resolve({ verified: true, message: 'Verification unavailable (inline adapter fallback)' });
+          }
+        }
+        if (bp instanceof vscode.FunctionBreakpoint && pendingFuncVerifications.has(bp)) {
+          const { resolve } = pendingFuncVerifications.get(bp)!;
+          pendingFuncVerifications.delete(bp);
+          try {
+            const dapBp = await session.getDebugProtocolBreakpoint(bp);
+            const verified = (dapBp as Record<string, unknown>)?.verified;
+            resolve({
+              verified: verified !== false,
+              message: (dapBp as Record<string, unknown>)?.message as string | undefined,
+            });
+          } catch (err) {
+            log.error(`[dapBridge] getDebugProtocolBreakpoint failed: ${err instanceof Error ? err.message : String(err)}`);
+            resolve({ verified: true, message: 'Verification unavailable (inline adapter fallback)' });
+          }
+        }
+      }
+
+      for (const bp of event.removed) {
+        if (bp instanceof vscode.SourceBreakpoint) {
+          const entry = pendingFileVerifications.get(bp);
+          if (entry) { entry.resolve({ verified: false, message: 'Breakpoint removed before verification' }); }
+          pendingFileVerifications.delete(bp);
+        }
+        if (bp instanceof vscode.FunctionBreakpoint) {
+          const entry = pendingFuncVerifications.get(bp);
+          if (entry) { entry.resolve({ verified: false, message: 'Breakpoint removed before verification' }); }
+          pendingFuncVerifications.delete(bp);
+        }
+      }
+    })
+  );
+}
+
+// Test helpers - allow tests to populate the session registry directly
+export function __addSessionForTesting(session: vscode.DebugSession): void {
+  trackSession(session);
+}
+
+export function __clearSessionsForTesting(): void {
+  sessionRegistry.clear();
+}
+
+// Test helpers - allow tests to inspect MCP-managed breakpoint state
+export function __getFileBreakpointsForTesting(): Map<string, vscode.SourceBreakpoint[]> {
+  return mcpFileBreakpoints;
+}
+
+export function __getFunctionBreakpointsForTesting(): vscode.FunctionBreakpoint[] {
+  return mcpFunctionBreakpoints;
+}
+
+export function getSessionCount(): number {
+  return sessionRegistry.size;
+}
+
+export function __clearBreakpointsForTesting(): void {
+  mcpFileBreakpoints.clear();
+  mcpFunctionBreakpoints = [];
 }
 
 // Resolve a specific session or fall back to the active session for agent workflows.
@@ -181,22 +315,12 @@ function getSession(sessionId?: string): vscode.DebugSession {
   return session;
 }
 
-// DAP signals "notStopped" when requesting stack data during execution.
-function isNotStoppedError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  if (message.includes('notStopped')) {
-    return true;
-  }
-
-  const errorWithBody = error as { body?: { error?: { id?: string } } };
-  return errorWithBody?.body?.error?.id === 'notStopped';
-}
-
 async function safeThreads(session: vscode.DebugSession): Promise<ThreadInfo[]> {
   try {
     const response = (await session.customRequest('threads')) as { threads?: ThreadInfo[] };
     return Array.isArray(response?.threads) ? response.threads : [];
-  } catch {
+  } catch (error) {
+    log.error(`Failed to get threads: ${error instanceof Error ? error.message : String(error)}`);
     return [];
   }
 }
@@ -250,19 +374,48 @@ export async function stack(options: {
   levels?: number;
 } = {}): Promise<StackFrame[]> {
   const session = getSession(options.sessionId);
-  const response = (await session.customRequest('stackTrace', {
-    threadId: options.threadId ?? 1,
-    startFrame: options.startFrame ?? 0,
-    levels: options.levels
-  })) as { stackFrames?: StackFrame[] };
-  return Array.isArray(response?.stackFrames) ? response.stackFrames : [];
+  try {
+    // Resolve threadId: default 1 works for mock, real Xdebug needs actual ID.
+    let threadId = options.threadId ?? 0;
+    if (!options.threadId) {
+      try {
+        const threadsResp = (await session.customRequest('threads')) as { threads?: { id: number }[] } | { body?: { threads?: { id: number }[] } };
+        const threads = (threadsResp as any).threads ?? (threadsResp as any).body?.threads ?? [];
+        if (threads.length > 0) { threadId = threads[0].id; }
+      } catch { threadId = 0; }
+    }
+    const raw = await session.customRequest('stackTrace', {
+      threadId,
+      startFrame: options.startFrame ?? 0,
+      levels: options.levels ?? 20
+    });
+    // Real DAP adapters may wrap response in a body property.
+    const response = raw as { stackFrames?: StackFrame[]; body?: { stackFrames?: StackFrame[] } };
+    const frames = response.stackFrames ?? response.body?.stackFrames;
+    if (!Array.isArray(frames)) {
+      log.error(`[dapBridge] Unexpected stackTrace response shape: ${JSON.stringify(raw)}`);
+    }
+    return Array.isArray(frames) ? frames : [];
+  } catch (error) {
+    if (isNotStoppedError(error)) {
+      throw new Error('Debug session is not stopped. Call wait_for_stop to block until a breakpoint is hit, or pause to interrupt execution.');
+    }
+    throw error;
+  }
 }
 
 // Scope list for a single frame.
 export async function scopes(frameId: number, sessionId?: string): Promise<Scope[]> {
   const session = getSession(sessionId);
-  const response = (await session.customRequest('scopes', { frameId })) as { scopes?: Scope[] };
-  return Array.isArray(response?.scopes) ? response.scopes : [];
+  try {
+    const response = (await session.customRequest('scopes', { frameId })) as { scopes?: Scope[] };
+    return Array.isArray(response?.scopes) ? response.scopes : [];
+  } catch (error) {
+    if (isNotStoppedError(error)) {
+      throw new Error('Debug session is not stopped. Call wait_for_stop to block until a breakpoint is hit, or pause to interrupt execution.');
+    }
+    throw error;
+  }
 }
 
 // Variable list request with optional paging and filters.
@@ -274,13 +427,20 @@ export async function variables(options: {
   filter?: 'indexed' | 'named';
 }): Promise<Variable[]> {
   const session = getSession(options.sessionId);
-  const response = (await session.customRequest('variables', {
-    variablesReference: options.variablesReference,
-    start: options.start,
-    count: options.count,
-    filter: options.filter
-  })) as { variables?: Variable[] };
-  return Array.isArray(response?.variables) ? response.variables : [];
+  try {
+    const response = (await session.customRequest('variables', {
+      variablesReference: options.variablesReference,
+      start: options.start,
+      count: options.count,
+      filter: options.filter
+    })) as { variables?: Variable[] };
+    return Array.isArray(response?.variables) ? response.variables : [];
+  } catch (error) {
+    if (isNotStoppedError(error)) {
+      throw new Error('Debug session is not stopped. Call wait_for_stop to block until a breakpoint is hit, or pause to interrupt execution.');
+    }
+    throw error;
+  }
 }
 
 // Expression evaluation in a specific frame.
@@ -291,11 +451,18 @@ export async function evaluate(options: {
   context?: 'watch' | 'repl' | 'hover' | 'clipboard';
 }): Promise<EvaluateResult> {
   const session = getSession(options.sessionId);
-  return (await session.customRequest('evaluate', {
-    expression: options.expression,
-    frameId: options.frameId,
-    context: options.context
-  })) as EvaluateResult;
+  try {
+    return (await session.customRequest('evaluate', {
+      expression: options.expression,
+      frameId: options.frameId,
+      context: options.context
+    })) as EvaluateResult;
+  } catch (error) {
+    if (isNotStoppedError(error)) {
+      throw new Error('Debug session is not stopped. Call wait_for_stop to block until a breakpoint is hit, or pause to interrupt execution.');
+    }
+    throw error;
+  }
 }
 
 export type SourceBreakpoint = {
@@ -338,6 +505,20 @@ export async function setFileBreakpoints(options: {
     return new vscode.SourceBreakpoint(location, true, breakpoint.condition, breakpoint.hitCondition, breakpoint.logMessage);
   });
 
+  const verificationTimeoutMs = 5000;
+  const verificationPromises = sourceBreakpoints.map(
+    (bp) =>
+      new Promise<BreakpointUpdate>((resolve) => {
+        pendingFileVerifications.set(bp, { resolve, reject: () => resolve({ verified: false, message: 'Verification rejected' }) });
+        setTimeout(() => {
+          if (pendingFileVerifications.has(bp)) {
+            pendingFileVerifications.delete(bp);
+            resolve({ verified: false, message: 'Verification timeout' });
+          }
+        }, verificationTimeoutMs);
+      })
+  );
+
   if (sourceBreakpoints.length > 0) {
     vscode.debug.addBreakpoints(sourceBreakpoints);
     mcpFileBreakpoints.set(key, sourceBreakpoints);
@@ -345,7 +526,7 @@ export async function setFileBreakpoints(options: {
     mcpFileBreakpoints.delete(key);
   }
 
-  return sourceBreakpoints.map(() => ({ verified: true }));
+  return Promise.all(verificationPromises);
 }
 
 // Function breakpoints are keyed by function name.
@@ -361,12 +542,27 @@ export async function setFunctionBreakpoints(options: {
     return new vscode.FunctionBreakpoint(breakpoint.name, true, breakpoint.condition, breakpoint.hitCondition);
   });
 
+  mcpFunctionBreakpoints = functionBreakpoints;
+
+  const verificationTimeoutMs = 5000;
+  const verificationPromises = functionBreakpoints.map(
+    (bp) =>
+      new Promise<BreakpointUpdate>((resolve) => {
+        pendingFuncVerifications.set(bp, { resolve, reject: () => resolve({ verified: false, message: 'Verification rejected' }) });
+        setTimeout(() => {
+          if (pendingFuncVerifications.has(bp)) {
+            pendingFuncVerifications.delete(bp);
+            resolve({ verified: false, message: 'Verification timeout' });
+          }
+        }, verificationTimeoutMs);
+      })
+  );
+
   if (functionBreakpoints.length > 0) {
     vscode.debug.addBreakpoints(functionBreakpoints);
   }
 
-  mcpFunctionBreakpoints = functionBreakpoints;
-  return functionBreakpoints.map(() => ({ verified: true }));
+  return Promise.all(verificationPromises);
 }
 
 // Exception filters are adapter-specific and depend on Xdebug capabilities.
@@ -409,8 +605,8 @@ export async function pause(options: { sessionId?: string; threadId?: number } =
   await session.customRequest('pause', { threadId: options.threadId ?? 1 });
 }
 
-export async function restart(sessionId?: string): Promise<void> {
-  const session = getSession(sessionId);
+export async function restart(options: { sessionId?: string } = {}): Promise<void> {
+  const session = getSession(options.sessionId);
   await session.customRequest('restart');
 }
 
@@ -431,4 +627,17 @@ export async function disconnect(options: {
     restart: options.restart,
     suspendDebuggee: options.suspendDebuggee
   });
+}
+
+/**
+ * Test helper — resolves a file path to a workspace Uri.
+ * STATELESS: does not read sessionRegistry. Integration tests import
+ * a separate module instance with an empty registry; this function
+ * uses only vscode.workspace.workspaceFolders.
+ */
+export async function __resolveFileUriForTesting(
+  file: string,
+  sessionId?: string
+): Promise<vscode.Uri> {
+  return resolveFileUri(file, sessionId);
 }

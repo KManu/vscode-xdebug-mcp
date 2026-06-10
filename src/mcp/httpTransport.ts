@@ -1,15 +1,22 @@
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from 'node:http';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { makeServer } from './server';
+import { log } from '../utils/logger';
+import { writePortFile, writeStoppedFile, cleanupPortFile } from '../utils/portFile';
 
 // We bind locally so only the current machine can reach the MCP server.
 const HOST = '127.0.0.1';
 const DEFAULT_PORT = 3098;
 // Guard against large JSON-RPC payloads from accidental dumps.
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+// Request timeout to prevent slow clients from blocking the event loop.
+const REQUEST_TIMEOUT_MS = 30_000;
+// Prevent infinite port-binding retries when all ports are occupied.
+const MAX_PORT_ATTEMPTS = 3;
 
 let runningServer: HttpServer | undefined;
 let serverUriPromise: Promise<string> | undefined;
+let lastKnownUri: string | undefined;
 
 export async function startHttpServer(options: { version?: string } = {}): Promise<string> {
   // Prevent multiple simultaneous server starts on extension reloads.
@@ -18,8 +25,34 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
   }
 
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-    // Only a single MCP endpoint is exposed; keep the surface area tight.
+    // Enforce a request timeout so slow clients cannot block the event loop.
+    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
+      if (!res.headersSent) {
+        res.statusCode = 408;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({
+          jsonrpc: '2.0',
+          error: { code: -32000, message: 'Request timeout' },
+          id: null
+        }));
+      }
+      req.destroy();
+    });
+
+    // Health check endpoint for monitoring and diagnostics.
     const url = new URL(req.url ?? '/', `http://${HOST}:${DEFAULT_PORT}`);
+    if (url.pathname === '/health' && req.method === 'GET') {
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({
+        status: 'ok',
+        version: options.version,
+        uptime: process.uptime()
+      }));
+      return;
+    }
+
+    // Only a single MCP endpoint is exposed; keep the surface area tight.
     if (url.pathname !== '/mcp') {
       res.statusCode = 404;
       res.end();
@@ -151,21 +184,54 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
     }
   });
 
+  // Detect unexpected server death and reset state so future starts can recover.
+  httpServer.on('close', () => {
+    if (runningServer === httpServer) {
+      log.info('HTTP server closed unexpectedly');
+      runningServer = undefined;
+      serverUriPromise = undefined;
+    }
+  });
+
   serverUriPromise = new Promise<string>((resolve, reject) => {
     // Try default port first; fall back to port 0 (OS-assigned) on EADDRINUSE.
     const tryListen = (port: number) => {
       httpServer.listen(port, HOST, () => {
         const actualPort = (httpServer.address() as { port: number }).port;
-        resolve(`http://${HOST}:${actualPort}/mcp`);
+        const uri = `http://${HOST}:${actualPort}/mcp`;
+        lastKnownUri = uri;
+
+        // Write the port file for external clients to discover the server.
+        writePortFile({
+          uri,
+          host: HOST,
+          port: actualPort,
+          version: options.version ?? '0.0.1',
+          pid: process.pid,
+          started: new Date().toISOString(),
+        });
+
+        resolve(uri);
       });
     };
 
+    let portAttempts = 0;
+
     httpServer.on('error', (err: NodeJS.ErrnoException) => {
-      if (err.code === 'EADDRINUSE') {
-        console.log(`Port ${DEFAULT_PORT} in use, falling back to dynamic port allocation`);
-        tryListen(0);
+      if (err.code === 'EADDRINUSE' && portAttempts < MAX_PORT_ATTEMPTS) {
+        portAttempts++;
+        if (portAttempts >= MAX_PORT_ATTEMPTS) {
+          serverUriPromise = undefined;
+          runningServer = undefined;
+          reject(new Error(`Failed to bind MCP server after ${MAX_PORT_ATTEMPTS} attempts. Port ${DEFAULT_PORT} and dynamic ports are all occupied.`));
+          return;
+        }
+        const fallbackPort = portAttempts === 1 ? 0 : undefined;
+        log.info(`Port ${DEFAULT_PORT} in use, falling back to dynamic port (attempt ${portAttempts}/${MAX_PORT_ATTEMPTS - 1})`);
+        tryListen(fallbackPort ?? 0);
       } else {
         serverUriPromise = undefined;
+        runningServer = undefined;
         reject(err);
       }
     });
@@ -177,13 +243,26 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
   return serverUriPromise;
 }
 
+export function getLastKnownUri(): string | undefined {
+  return lastKnownUri;
+}
+
 export async function stopHttpServer(): Promise<void> {
   if (!runningServer) {
     return;
   }
 
+  // Mark port file as stopped before closing so readers see the stopped state.
+  writeStoppedFile();
+
+  const server = runningServer;
+  // Reset state BEFORE closing to avoid the close handler logging 'closed unexpectedly'.
+  runningServer = undefined;
+  serverUriPromise = undefined;
+  lastKnownUri = undefined;
+
   await new Promise<void>((resolve, reject) => {
-    runningServer?.close((err?: Error) => {
+    server.close((err?: Error) => {
       if (err) {
         reject(err);
         return;
@@ -192,7 +271,6 @@ export async function stopHttpServer(): Promise<void> {
     });
   });
 
-  // Reset cached state so a future activate can restart cleanly.
-  runningServer = undefined;
-  serverUriPromise = undefined;
+  // Clean up port file after server is fully stopped.
+  cleanupPortFile();
 }
