@@ -334,17 +334,10 @@ describe("Xdebug E2E Native", function () {
 		const termSc = termResp.result.structuredContent || termResp.result;
 		assert.strictEqual(termSc.success, true, "terminate should succeed");
 
-		// Real Xdebug may end the session asynchronously. terminate is the
-		// preferred path; if the session lingers (some adapters don't fire
-		// `terminated` promptly on terminate), fall back to disconnect.
-		try {
-			await pollUntilSessionGone(port, activeSession.id, 10000);
-		} catch {
-			await toolCall(port, "disconnect", { terminateDebuggee: true }).catch(
-				() => undefined,
-			);
-			await pollUntilSessionGone(port, activeSession.id, 15000);
-		}
+		// terminate() internally falls back to disconnect({terminateDebuggee:true})
+		// for adapters (e.g. xdebug.php-debug) that don't fire `terminated` on a
+		// terminate DAP request — so the session should disappear on its own.
+		await pollUntilSessionGone(port, activeSession.id, 15000);
 
 		const listResp = await toolCall(port, "list_sessions");
 		const listSc = listResp.result.structuredContent || listResp.result;

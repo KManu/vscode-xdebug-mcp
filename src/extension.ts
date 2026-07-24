@@ -170,7 +170,10 @@ url = "${uri}"`;
   function updateStatusBar(): void {
     const count = getSessionCount();
     const uri = getLastKnownUri() ?? getActiveUri();
-    const portPart = uri ? ` :${new URL(uri).port}` : '';
+    let portPart = '';
+    if (uri) {
+      try { portPart = ` :${new URL(uri).port}`; } catch { /* invalid uri */ }
+    }
     if (count > 0) {
       statusBarItem.text = `$(debug-alt) Xdebug MCP (${count})${portPart}`;
       statusBarItem.backgroundColor = undefined;
@@ -193,7 +196,8 @@ url = "${uri}"`;
 
   // Show fallback port notification once per session (if port 3098 was occupied).
   if (usedFallbackPort && mcpUri) {
-    const port = new URL(mcpUri).port;
+    let port = '';
+    try { port = new URL(mcpUri).port; } catch { /* invalid mcpUri */ }
     context.globalState.update('xdebug-mcp.fallbackPortShown', true);
     void vscode.window.showInformationMessage(
       `Xdebug MCP is using port ${port} (3098 was occupied). Use the status bar to find the URI.`
@@ -204,18 +208,17 @@ url = "${uri}"`;
   const definitionsChanged = new vscode.EventEmitter<void>();
   context.subscriptions.push(definitionsChanged);
 
-  const provider = (vscode.lm as any).registerMcpServerDefinitionProvider('xdebugMcpProvider', {
+  const provider = vscode.lm.registerMcpServerDefinitionProvider('xdebugMcpProvider', {
     onDidChangeMcpServerDefinitions: definitionsChanged.event,
-    provideMcpServerDefinitions: async () => {
+    provideMcpServerDefinitions: async (): Promise<vscode.McpServerDefinition[]> => {
       try {
         // The HTTP server is reused; this just returns the definition.
-        const uri = await startHttpServer({ version: serverVersion });
+        const httpUri = await startHttpServer({ version: serverVersion });
         return [
-          new (vscode as any).McpHttpServerDefinition({
-            label: 'xdebug-mcp',
-            uri,
-            version: serverVersion
-          })
+          // Typed constructor: (label, uri: Uri, headers?, version?). Passing
+          // a single options object makes `label` the whole object, which VS
+          // Code rejects with "Expected string, but got object".
+          new vscode.McpHttpServerDefinition('xdebug-mcp', vscode.Uri.parse(httpUri), {}, serverVersion)
         ];
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -223,7 +226,7 @@ url = "${uri}"`;
         return [];
       }
     },
-    resolveMcpServerDefinition: async (definition: unknown) => definition
+    resolveMcpServerDefinition: async (definition: vscode.McpServerDefinition) => definition
   });
 
   context.subscriptions.push(provider);

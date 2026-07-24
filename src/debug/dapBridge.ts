@@ -610,9 +610,36 @@ export async function restart(options: { sessionId?: string } = {}): Promise<voi
   await session.customRequest('restart');
 }
 
+/** Waits up to `timeoutMs` for `sessionId` to leave the registry. Returns true if removed. */
+async function waitForSessionRemoved(sessionId: string, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!sessionRegistry.has(sessionId)) {
+      return true;
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  return !sessionRegistry.has(sessionId);
+}
+
 export async function terminate(options: { sessionId?: string; restart?: boolean } = {}): Promise<void> {
   const session = getSession(options.sessionId);
   await session.customRequest('terminate', { restart: options.restart });
+
+  // Some debug adapters (notably xdebug.php-debug) acknowledge `terminate`
+  // without firing the DAP `terminated` event promptly, so the session
+  // lingers in the registry and `list_sessions` keeps reporting it. Fall
+  // back to `disconnect({ terminateDebuggee: true })`, which those adapters
+  // do honor, then wait briefly for the session to actually disappear.
+  if (await waitForSessionRemoved(session.id, 3000)) {
+    return;
+  }
+  try {
+    await session.customRequest('disconnect', { terminateDebuggee: true });
+  } catch {
+    // Adapter may have already torn down the connection; ignore.
+  }
+  await waitForSessionRemoved(session.id, 2000);
 }
 
 export async function disconnect(options: {
