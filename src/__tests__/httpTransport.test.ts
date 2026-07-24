@@ -52,8 +52,8 @@ vi.mock('@modelcontextprotocol/sdk/server/streamableHttp.js', () => ({
             result: {
               protocolVersion: '2024-11-05',
               capabilities: {},
-              serverInfo: { name: 'xdebug-mcp', version: '0.0.1' }
-            }
+              serverInfo: { name: 'xdebug-mcp', version: '0.0.1' },
+            },
           });
           return Promise.resolve();
         }
@@ -68,10 +68,10 @@ vi.mock('@modelcontextprotocol/sdk/server/streamableHttp.js', () => ({
               content: [
                 {
                   type: 'text',
-                  text: JSON.stringify({ success: true, ...params })
-                }
-              ]
-            }
+                  text: JSON.stringify({ success: true, ...params }),
+                },
+              ],
+            },
           });
           return Promise.resolve();
         }
@@ -83,8 +83,8 @@ vi.mock('@modelcontextprotocol/sdk/server/streamableHttp.js', () => ({
             id: requestId,
             error: {
               code: -32601,
-              message: 'Method not found'
-            }
+              message: 'Method not found',
+            },
           });
           return Promise.resolve();
         }
@@ -116,7 +116,7 @@ function makePostRequest(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Accept': 'application/json, text/event-stream',
+          Accept: 'application/json, text/event-stream',
         },
       },
       (res) => {
@@ -161,7 +161,7 @@ function makeGetRequest(serverUrl: string): Promise<{ statusCode: number; body: 
         port: url.port,
         path: url.pathname,
         method: 'GET',
-        headers: { 'Accept': 'text/event-stream' },
+        headers: { Accept: 'text/event-stream' },
       },
       (res) => {
         const chunks: Buffer[] = [];
@@ -280,20 +280,12 @@ describe('httpTransport body size limits', () => {
 
 describe('httpTransport path routing', () => {
   it('should return 404 for non-/mcp paths', async () => {
-    const res = await makeRawRequest(
-      sharedServerUrl,
-      { method: 'GET', path: '/other' },
-      null
-    );
+    const res = await makeRawRequest(sharedServerUrl, { method: 'GET', path: '/other' }, null);
     expect(res.statusCode).toBe(404);
   });
 
   it('should return 404 for /mcp/extra path', async () => {
-    const res = await makeRawRequest(
-      sharedServerUrl,
-      { method: 'GET', path: '/mcp/extra' },
-      null
-    );
+    const res = await makeRawRequest(sharedServerUrl, { method: 'GET', path: '/mcp/extra' }, null);
     expect(res.statusCode).toBe(404);
   });
 });
@@ -335,8 +327,8 @@ describe('httpTransport MCP protocol integration', () => {
       method: 'tools/call',
       params: {
         name: 'threads',
-        arguments: {}
-      }
+        arguments: {},
+      },
     };
 
     const res = await makePostRequest(sharedServerUrl, JSON.stringify(jsonRpcRequest));
@@ -358,8 +350,8 @@ describe('httpTransport MCP protocol integration', () => {
       params: {
         protocolVersion: '2024-11-05',
         capabilities: {},
-        clientInfo: { name: 'test', version: '1.0.0' }
-      }
+        clientInfo: { name: 'test', version: '1.0.0' },
+      },
     };
 
     const res = await makePostRequest(sharedServerUrl, JSON.stringify(initRequest));
@@ -376,7 +368,7 @@ describe('httpTransport MCP protocol integration', () => {
       jsonrpc: '2.0',
       id: 1,
       method: 'unknown/method',
-      params: {}
+      params: {},
     };
 
     const res = await makePostRequest(sharedServerUrl, JSON.stringify(badRequest));
@@ -451,11 +443,7 @@ describe('httpTransport header normalization', () => {
   });
 
   it('should add Accept header to GET requests without it', async () => {
-    await makeRawRequest(
-      sharedServerUrl,
-      { method: 'GET' },
-      null
-    );
+    await makeRawRequest(sharedServerUrl, { method: 'GET' }, null);
 
     const headers = getLastTransportRequestHeaders();
     expect(headers).toBeDefined();
@@ -477,11 +465,7 @@ describe('httpTransport header normalization', () => {
 
   it('should not override existing Accept header on GET when it contains text/event-stream', async () => {
     const originalAccept = 'text/event-stream';
-    await makeRawRequest(
-      sharedServerUrl,
-      { method: 'GET', headers: { Accept: originalAccept } },
-      null
-    );
+    await makeRawRequest(sharedServerUrl, { method: 'GET', headers: { Accept: originalAccept } }, null);
 
     const headers = getLastTransportRequestHeaders();
     expect(headers).toBeDefined();
@@ -503,7 +487,10 @@ describe('httpTransport header normalization', () => {
   it('should not override existing Content-Type header on POST', async () => {
     await makeRawRequest(
       sharedServerUrl,
-      { method: 'POST', headers: { 'Content-Type': 'application/vnd.api+json', Accept: 'application/json, text/event-stream' } },
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/vnd.api+json', Accept: 'application/json, text/event-stream' },
+      },
       JSON.stringify({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'threads' }, id: 1 })
     );
 
@@ -513,11 +500,7 @@ describe('httpTransport header normalization', () => {
   });
 
   it('should not add Content-Type header to GET requests', async () => {
-    await makeRawRequest(
-      sharedServerUrl,
-      { method: 'GET' },
-      null
-    );
+    await makeRawRequest(sharedServerUrl, { method: 'GET' }, null);
 
     const headers = getLastTransportRequestHeaders();
     expect(headers).toBeDefined();

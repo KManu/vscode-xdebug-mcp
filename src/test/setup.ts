@@ -19,7 +19,7 @@ try {
   try {
     process.kill(data.pid, 0); // alive — preserve
   } catch {
-    fs.unlinkSync(PORT_FILE);  // dead — safe to remove
+    fs.unlinkSync(PORT_FILE); // dead — safe to remove
   }
 } catch {
   // file doesn't exist or is malformed — fine
@@ -27,5 +27,7 @@ try {
 
 // Cleanup on process exit (runs after all tests complete).
 process.on('exit', () => {
-  try { unregisterMockDebugAdapter(); } catch {}
+  try {
+    unregisterMockDebugAdapter();
+  } catch {}
 });

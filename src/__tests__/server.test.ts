@@ -48,7 +48,10 @@ describe('server tool schema validation', () => {
   }
 
   // Helper to validate input against schema
-  function validateInput(schema: z.ZodObject<any>, input: Record<string, any>): { success: boolean; error?: z.ZodError } {
+  function validateInput(
+    schema: z.ZodObject<any>,
+    input: Record<string, any>
+  ): { success: boolean; error?: z.ZodError } {
     const result = schema.safeParse(input);
     return { success: result.success, error: result.error };
   }
@@ -63,7 +66,7 @@ describe('server tool schema validation', () => {
         sessionId: 'test-session',
         threadId: 1,
         startFrame: 0,
-        levels: 10
+        levels: 10,
       };
       const result = validateInput(schema!, validInput);
       expect(result.success).toBe(true);
@@ -200,7 +203,7 @@ describe('server tool schema validation', () => {
         variablesReference: 1,
         start: 0,
         count: 10,
-        filter: 'indexed'
+        filter: 'indexed',
       });
       expect(result.success).toBe(true);
     });
@@ -212,7 +215,7 @@ describe('server tool schema validation', () => {
 
       const result = validateInput(schema!, {
         variablesReference: 1,
-        filter: 'named'
+        filter: 'named',
       });
       expect(result.success).toBe(true);
     });
@@ -243,7 +246,7 @@ describe('server tool schema validation', () => {
 
       const result = validateInput(schema!, {
         variablesReference: 1,
-        filter: 'invalid'
+        filter: 'invalid',
       });
       expect(result.success).toBe(false);
     });
@@ -257,7 +260,7 @@ describe('server tool schema validation', () => {
 
       const result = validateInput(schema!, {
         file: '/path/to/file.php',
-        breakpoints: [{ line: 10 }]
+        breakpoints: [{ line: 10 }],
       });
       expect(result.success).toBe(true);
     });
@@ -269,12 +272,14 @@ describe('server tool schema validation', () => {
 
       const result = validateInput(schema!, {
         file: '/path/to/file.php',
-        breakpoints: [{
-          line: 10,
-          condition: '$x > 0',
-          hitCondition: '>5',
-          logMessage: 'x is {$x}'
-        }]
+        breakpoints: [
+          {
+            line: 10,
+            condition: '$x > 0',
+            hitCondition: '>5',
+            logMessage: 'x is {$x}',
+          },
+        ],
       });
       expect(result.success).toBe(true);
     });
@@ -286,11 +291,7 @@ describe('server tool schema validation', () => {
 
       const result = validateInput(schema!, {
         file: '/path/to/file.php',
-        breakpoints: [
-          { line: 10 },
-          { line: 20, condition: '$x > 5' },
-          { line: 30, logMessage: 'hit' }
-        ]
+        breakpoints: [{ line: 10 }, { line: 20, condition: '$x > 5' }, { line: 30, logMessage: 'hit' }],
       });
       expect(result.success).toBe(true);
     });
@@ -301,7 +302,7 @@ describe('server tool schema validation', () => {
       expect(schema).toBeDefined();
 
       const result = validateInput(schema!, {
-        breakpoints: [{ line: 10 }]
+        breakpoints: [{ line: 10 }],
       });
       expect(result.success).toBe(false);
       expect(result.error?.issues[0].path).toContain('file');
@@ -313,7 +314,7 @@ describe('server tool schema validation', () => {
       expect(schema).toBeDefined();
 
       const result = validateInput(schema!, {
-        file: '/path/to/file.php'
+        file: '/path/to/file.php',
       });
       expect(result.success).toBe(false);
     });
@@ -325,7 +326,7 @@ describe('server tool schema validation', () => {
 
       const result = validateInput(schema!, {
         file: '/path/to/file.php',
-        breakpoints: [{ line: 0 }]
+        breakpoints: [{ line: 0 }],
       });
       expect(result.success).toBe(false);
     });
@@ -337,7 +338,7 @@ describe('server tool schema validation', () => {
 
       const result = validateInput(schema!, {
         file: '/path/to/file.php',
-        breakpoints: [{ line: -5 }]
+        breakpoints: [{ line: -5 }],
       });
       expect(result.success).toBe(false);
     });
@@ -351,7 +352,7 @@ describe('server tool schema validation', () => {
 
       const result = validateInput(schema!, {
         file: '/path/to/file.php',
-        logpoints: [{ line: 10, logMessage: 'log message' }]
+        logpoints: [{ line: 10, logMessage: 'log message' }],
       });
       expect(result.success).toBe(true);
     });
@@ -363,12 +364,14 @@ describe('server tool schema validation', () => {
 
       const result = validateInput(schema!, {
         file: '/path/to/file.php',
-        logpoints: [{
-          line: 10,
-          logMessage: 'log message',
-          condition: '$x > 0',
-          hitCondition: '>3'
-        }]
+        logpoints: [
+          {
+            line: 10,
+            logMessage: 'log message',
+            condition: '$x > 0',
+            hitCondition: '>3',
+          },
+        ],
       });
       expect(result.success).toBe(true);
     });
@@ -379,7 +382,7 @@ describe('server tool schema validation', () => {
       expect(schema).toBeDefined();
 
       const result = validateInput(schema!, {
-        logpoints: [{ line: 10, logMessage: 'msg' }]
+        logpoints: [{ line: 10, logMessage: 'msg' }],
       });
       expect(result.success).toBe(false);
       expect(result.error?.issues[0].path).toContain('file');
@@ -391,7 +394,7 @@ describe('server tool schema validation', () => {
       expect(schema).toBeDefined();
 
       const result = validateInput(schema!, {
-        file: '/path/to/file.php'
+        file: '/path/to/file.php',
       });
       expect(result.success).toBe(false);
     });
@@ -403,7 +406,7 @@ describe('server tool schema validation', () => {
 
       const result = validateInput(schema!, {
         file: '/path/to/file.php',
-        logpoints: [{ line: 10, logMessage: '' }]
+        logpoints: [{ line: 10, logMessage: '' }],
       });
       expect(result.success).toBe(false);
     });
@@ -416,7 +419,7 @@ describe('server tool schema validation', () => {
       expect(schema).toBeDefined();
 
       const result = validateInput(schema!, {
-        file: '/path/to/file.php'
+        file: '/path/to/file.php',
       });
       expect(result.success).toBe(true);
     });
@@ -428,7 +431,7 @@ describe('server tool schema validation', () => {
 
       const result = validateInput(schema!, {
         file: '/path/to/file.php',
-        sessionId: 'test-session'
+        sessionId: 'test-session',
       });
       expect(result.success).toBe(true);
     });
@@ -451,7 +454,7 @@ describe('server tool schema validation', () => {
       expect(schema).toBeDefined();
 
       const result = validateInput(schema!, {
-        breakpoints: [{ name: 'myFunction' }]
+        breakpoints: [{ name: 'myFunction' }],
       });
       expect(result.success).toBe(true);
     });
@@ -462,10 +465,7 @@ describe('server tool schema validation', () => {
       expect(schema).toBeDefined();
 
       const result = validateInput(schema!, {
-        breakpoints: [
-          { name: 'function1' },
-          { name: 'function2', condition: '$x > 0' }
-        ]
+        breakpoints: [{ name: 'function1' }, { name: 'function2', condition: '$x > 0' }],
       });
       expect(result.success).toBe(true);
     });
@@ -485,7 +485,7 @@ describe('server tool schema validation', () => {
       expect(schema).toBeDefined();
 
       const result = validateInput(schema!, {
-        breakpoints: [{ name: '' }]
+        breakpoints: [{ name: '' }],
       });
       expect(result.success).toBe(false);
     });
@@ -498,7 +498,7 @@ describe('server tool schema validation', () => {
       expect(schema).toBeDefined();
 
       const result = validateInput(schema!, {
-        filters: ['AllExceptions']
+        filters: ['AllExceptions'],
       });
       expect(result.success).toBe(true);
     });
@@ -509,7 +509,7 @@ describe('server tool schema validation', () => {
       expect(schema).toBeDefined();
 
       const result = validateInput(schema!, {
-        filters: ['AllExceptions', 'UnhandledExceptions']
+        filters: ['AllExceptions', 'UnhandledExceptions'],
       });
       expect(result.success).toBe(true);
     });
@@ -521,7 +521,7 @@ describe('server tool schema validation', () => {
 
       const result = validateInput(schema!, {
         filters: ['AllExceptions'],
-        exceptionOptions: [{ type: 'some' }]
+        exceptionOptions: [{ type: 'some' }],
       });
       expect(result.success).toBe(true);
     });
@@ -541,7 +541,7 @@ describe('server tool schema validation', () => {
       expect(schema).toBeDefined();
 
       const result = validateInput(schema!, {
-        filters: ['']
+        filters: [''],
       });
       expect(result.success).toBe(false);
     });
@@ -554,7 +554,7 @@ describe('server tool schema validation', () => {
       expect(schema).toBeDefined();
 
       const result = validateInput(schema!, {
-        expr: '$x + 1'
+        expr: '$x + 1',
       });
       expect(result.success).toBe(true);
     });
@@ -566,7 +566,7 @@ describe('server tool schema validation', () => {
 
       const result = validateInput(schema!, {
         expr: '$x + 1',
-        frameId: 5
+        frameId: 5,
       });
       expect(result.success).toBe(true);
     });
@@ -578,7 +578,7 @@ describe('server tool schema validation', () => {
 
       const result = validateInput(schema!, {
         expr: '$x + 1',
-        context: 'repl'
+        context: 'repl',
       });
       expect(result.success).toBe(true);
     });
@@ -592,7 +592,7 @@ describe('server tool schema validation', () => {
         expr: '$x + 1',
         frameId: 1,
         context: 'watch',
-        threadId: 2
+        threadId: 2,
       });
       expect(result.success).toBe(true);
     });
@@ -603,7 +603,7 @@ describe('server tool schema validation', () => {
       expect(schema).toBeDefined();
 
       const result = validateInput(schema!, {
-        frameId: 5
+        frameId: 5,
       });
       expect(result.success).toBe(false);
       expect(result.error?.issues[0].path).toContain('expr');
@@ -616,7 +616,7 @@ describe('server tool schema validation', () => {
 
       const result = validateInput(schema!, {
         expr: '$x + 1',
-        context: 'invalid'
+        context: 'invalid',
       });
       expect(result.success).toBe(false);
     });
@@ -808,7 +808,7 @@ describe('server tool schema validation', () => {
         sessionId: 'test',
         terminateDebuggee: true,
         restart: false,
-        suspendDebuggee: false
+        suspendDebuggee: false,
       });
       expect(result.success).toBe(true);
     });
@@ -898,7 +898,7 @@ describe('server tool schema validation', () => {
         sessionId: 'test',
         threadId: 1,
         includeExpensive: true,
-        maxVariables: 50
+        maxVariables: 50,
       });
       expect(result.success).toBe(true);
     });
@@ -1016,7 +1016,7 @@ describe('server tool structuredContent verification', () => {
       const mockStatus = {
         session: { id: 'test', name: 'Test', type: 'php' },
         stopped: true,
-        threadId: 1
+        threadId: 1,
       };
       (dapBridge.status as any).mockResolvedValue(mockStatus);
 
@@ -1079,7 +1079,7 @@ describe('server tool structuredContent verification', () => {
       const server = makeServer({ version: '0.0.1' });
       const result = await callTool(server, 'set_breakpoint', {
         file: '/test.php',
-        breakpoints: [{ line: 10 }]
+        breakpoints: [{ line: 10 }],
       });
 
       expect(result.structuredContent).toBeDefined();
@@ -1096,7 +1096,7 @@ describe('server tool structuredContent verification', () => {
       const server = makeServer({ version: '0.0.1' });
       const result = await callTool(server, 'set_logpoint', {
         file: '/test.php',
-        logpoints: [{ line: 10, logMessage: 'log message' }]
+        logpoints: [{ line: 10, logMessage: 'log message' }],
       });
 
       expect(result.structuredContent).toBeDefined();
@@ -1126,7 +1126,7 @@ describe('server tool structuredContent verification', () => {
 
       const server = makeServer({ version: '0.0.1' });
       const result = await callTool(server, 'set_function_breakpoints', {
-        breakpoints: [{ name: 'myFunction' }]
+        breakpoints: [{ name: 'myFunction' }],
       });
 
       expect(result.structuredContent).toBeDefined();
@@ -1142,7 +1142,7 @@ describe('server tool structuredContent verification', () => {
 
       const server = makeServer({ version: '0.0.1' });
       const result = await callTool(server, 'set_exception_breakpoints', {
-        filters: ['AllExceptions']
+        filters: ['AllExceptions'],
       });
 
       expect(result.structuredContent).toBeDefined();
@@ -1265,9 +1265,7 @@ describe('server tool structuredContent verification', () => {
   describe('wait_for_stop tool', () => {
     it('should return structuredContent with success:true and stopped:true when debuggee stops', async () => {
       // First call returns no frame (not stopped), second call returns a frame
-      (dapBridge.stack as any)
-        .mockResolvedValueOnce([])
-        .mockResolvedValue([{ id: 1, name: 'main' }]);
+      (dapBridge.stack as any).mockResolvedValueOnce([]).mockResolvedValue([{ id: 1, name: 'main' }]);
 
       // Mock setTimeout to advance immediately
       vi.spyOn(global, 'setTimeout').mockImplementation((fn: any) => {
@@ -1333,7 +1331,7 @@ describe('server tool structuredContent verification', () => {
       const mockFrames = [{ id: 1, name: 'main' }];
       const mockScopes = [
         { name: 'Local', variablesReference: 1, expensive: false },
-        { name: 'Superglobals', variablesReference: 2, expensive: true }
+        { name: 'Superglobals', variablesReference: 2, expensive: true },
       ];
       const mockLocalVars = [{ name: '$x', value: '1' }];
 
@@ -1353,7 +1351,7 @@ describe('server tool structuredContent verification', () => {
       const mockFrames = [{ id: 1, name: 'main' }];
       const mockScopes = [
         { name: 'Local', variablesReference: 1, expensive: false },
-        { name: 'Superglobals', variablesReference: 2, expensive: true }
+        { name: 'Superglobals', variablesReference: 2, expensive: true },
       ];
       const mockLocalVars = [{ name: '$x', value: '1' }];
 
@@ -1464,7 +1462,7 @@ describe('server resource handlers', () => {
     it('should resolve and return stack frames when session has frames', async () => {
       const mockFrames = [
         { id: 1, name: 'main', line: 10, source: { name: 'index.php', path: '/var/www/index.php' } },
-        { id: 2, name: 'helper', line: 25, source: { name: 'helper.php', path: '/var/www/helper.php' } }
+        { id: 2, name: 'helper', line: 25, source: { name: 'helper.php', path: '/var/www/helper.php' } },
       ];
       (dapBridge.stack as any).mockResolvedValueOnce(mockFrames);
 
@@ -1502,12 +1500,10 @@ describe('server resource handlers', () => {
 
   describe('Resource: xdebug://variables/{frameId}', () => {
     it('should return variables for a valid frameId', async () => {
-      const mockScopes = [
-        { name: 'Local', variablesReference: 100, expensive: false }
-      ];
+      const mockScopes = [{ name: 'Local', variablesReference: 100, expensive: false }];
       const mockVariables = [
         { name: '$x', value: '42', type: 'int', variablesReference: 0 },
-        { name: '$y', value: '"hello"', type: 'string', variablesReference: 0 }
+        { name: '$y', value: '"hello"', type: 'string', variablesReference: 0 },
       ];
       (dapBridge.scopes as any).mockResolvedValueOnce(mockScopes);
       (dapBridge.variables as any).mockResolvedValueOnce(mockVariables);

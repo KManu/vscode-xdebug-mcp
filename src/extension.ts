@@ -71,23 +71,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
 
-      const choice = await vscode.window.showQuickPick([
-        {
-          label: '$(json) Standard .mcp.json / VS Code / pi',
-          description: 'For workspace .vscode/mcp.json, ~/.config/mcp/mcp.json, or .mcp.json',
-          format: 'mcp',
-        },
-        {
-          label: '$(file-code) Codex (config.toml)',
-          description: 'For ~/.codex/config.toml or .codex/config.toml',
-          format: 'codex',
-        },
-        {
-          label: '$(settings-gear) Claude Code (settings.json)',
-          description: 'For ~/.claude/settings.json → mcpServers section',
-          format: 'claude',
-        },
-      ], { placeHolder: 'Select target MCP client to copy config for…' });
+      const choice = await vscode.window.showQuickPick(
+        [
+          {
+            label: '$(json) Standard .mcp.json / VS Code / pi',
+            description: 'For workspace .vscode/mcp.json, ~/.config/mcp/mcp.json, or .mcp.json',
+            format: 'mcp',
+          },
+          {
+            label: '$(file-code) Codex (config.toml)',
+            description: 'For ~/.codex/config.toml or .codex/config.toml',
+            format: 'codex',
+          },
+          {
+            label: '$(settings-gear) Claude Code (settings.json)',
+            description: 'For ~/.claude/settings.json → mcpServers section',
+            format: 'claude',
+          },
+        ],
+        { placeHolder: 'Select target MCP client to copy config for…' }
+      );
 
       if (!choice) {
         return;
@@ -146,11 +149,7 @@ url = "${uri}"`;
 
       const detail = `Before:\n${preview.before}\n\nAfter:\n${preview.after}`;
 
-      const confirmed = await vscode.window.showInformationMessage(
-        message,
-        { modal: true, detail },
-        action,
-      );
+      const confirmed = await vscode.window.showInformationMessage(message, { modal: true, detail }, action);
 
       if (confirmed !== action) {
         return;
@@ -172,7 +171,11 @@ url = "${uri}"`;
     const uri = getLastKnownUri() ?? getActiveUri();
     let portPart = '';
     if (uri) {
-      try { portPart = ` :${new URL(uri).port}`; } catch { /* invalid uri */ }
+      try {
+        portPart = ` :${new URL(uri).port}`;
+      } catch {
+        /* invalid uri */
+      }
     }
     if (count > 0) {
       statusBarItem.text = `$(debug-alt) Xdebug MCP (${count})${portPart}`;
@@ -181,9 +184,7 @@ url = "${uri}"`;
       statusBarItem.text = `$(debug-disconnect) Xdebug MCP${portPart}`;
       statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     }
-    statusBarItem.tooltip = uri
-      ? `Xdebug MCP Server — ${uri} (click to copy)`
-      : 'Xdebug MCP Server (not running)';
+    statusBarItem.tooltip = uri ? `Xdebug MCP Server — ${uri} (click to copy)` : 'Xdebug MCP Server (not running)';
     statusBarItem.show();
   }
 
@@ -197,7 +198,11 @@ url = "${uri}"`;
   // Show fallback port notification once per session (if port 3098 was occupied).
   if (usedFallbackPort && mcpUri) {
     let port = '';
-    try { port = new URL(mcpUri).port; } catch { /* invalid mcpUri */ }
+    try {
+      port = new URL(mcpUri).port;
+    } catch {
+      /* invalid mcpUri */
+    }
     context.globalState.update('xdebug-mcp.fallbackPortShown', true);
     void vscode.window.showInformationMessage(
       `Xdebug MCP is using port ${port} (3098 was occupied). Use the status bar to find the URI.`
@@ -218,7 +223,7 @@ url = "${uri}"`;
           // Typed constructor: (label, uri: Uri, headers?, version?). Passing
           // a single options object makes `label` the whole object, which VS
           // Code rejects with "Expected string, but got object".
-          new vscode.McpHttpServerDefinition('xdebug-mcp', vscode.Uri.parse(httpUri), {}, serverVersion)
+          new vscode.McpHttpServerDefinition('xdebug-mcp', vscode.Uri.parse(httpUri), {}, serverVersion),
         ];
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -226,7 +231,7 @@ url = "${uri}"`;
         return [];
       }
     },
-    resolveMcpServerDefinition: async (definition: vscode.McpServerDefinition) => definition
+    resolveMcpServerDefinition: async (definition: vscode.McpServerDefinition) => definition,
   });
 
   context.subscriptions.push(provider);

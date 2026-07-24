@@ -186,14 +186,11 @@ describe('HTTP Transport', function () {
     // We verify this by setting a short socket timeout and asserting the request
     // is killed by the timeout (not a normal HTTP response).
     const result = await new Promise<'timeout' | 'response'>((resolve) => {
-      const req = http.request(
-        { hostname, port, path: '/mcp', method: 'GET' },
-        (res) => {
-          // If we somehow get a response, consume it.
-          res.resume();
-          res.on('end', () => resolve('response'));
-        },
-      );
+      const req = http.request({ hostname, port, path: '/mcp', method: 'GET' }, (res) => {
+        // If we somehow get a response, consume it.
+        res.resume();
+        res.on('end', () => resolve('response'));
+      });
       req.on('error', () => resolve('timeout'));
       req.setTimeout(2000, () => {
         req.destroy(new Error('timeout'));
@@ -202,7 +199,11 @@ describe('HTTP Transport', function () {
       req.end();
     });
 
-    assert.strictEqual(result, 'timeout', 'GET /mcp should hang (SSE) causing socket timeout, not return a normal HTTP response');
+    assert.strictEqual(
+      result,
+      'timeout',
+      'GET /mcp should hang (SSE) causing socket timeout, not return a normal HTTP response'
+    );
   });
 
   it('GET /nonexistent returns 404', async function () {

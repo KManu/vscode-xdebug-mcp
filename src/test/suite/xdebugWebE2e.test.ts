@@ -44,25 +44,38 @@ echo "done\\n";
 function mcpRequest(port: number, method: string, params?: any, id = 1): Promise<any> {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({ jsonrpc: '2.0', id, method, params });
-    const req = http.request({
-      hostname: 'localhost', port, path: '/mcp', method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-    }, (res) => {
-      let data = '';
-      res.on('data', (c: Buffer) => (data += c));
-      res.on('end', () => {
-        try { resolve(JSON.parse(data)); } catch { reject(new Error(`Parse error: ${data.slice(0, 200)}`)); }
-      });
-    });
+    const req = http.request(
+      {
+        hostname: 'localhost',
+        port,
+        path: '/mcp',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (c: Buffer) => (data += c));
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(data));
+          } catch {
+            reject(new Error(`Parse error: ${data.slice(0, 200)}`));
+          }
+        });
+      }
+    );
     req.on('error', reject);
-    req.write(body); req.end();
+    req.write(body);
+    req.end();
   });
 }
-const toolCall = (port: number, name: string, args?: any) => mcpRequest(port, 'tools/call', { name, arguments: args || {} });
+const toolCall = (port: number, name: string, args?: any) =>
+  mcpRequest(port, 'tools/call', { name, arguments: args || {} });
 
 async function initializeMcp(port: number): Promise<void> {
   await mcpRequest(port, 'initialize', {
-    protocolVersion: '2024-11-05', capabilities: {},
+    protocolVersion: '2024-11-05',
+    capabilities: {},
     clientInfo: { name: 'xdebug-web-e2e-test', version: '1.0.0' },
   });
   await mcpRequest(port, 'notifications/initialized', {}, 2);
@@ -75,7 +88,9 @@ async function pollUntilStopped(port: number, timeoutMs = 60000, intervalMs = 20
       const r = await toolCall(port, 'status');
       const sc = r.result?.structuredContent || r.result || {};
       if (sc.status?.stopped === true) return;
-    } catch { /* server may not be ready yet */ }
+    } catch {
+      /* server may not be ready yet */
+    }
     await new Promise((r) => setTimeout(r, intervalMs));
   }
   throw new Error(`Timed out waiting for session to stop after ${timeoutMs}ms`);
@@ -84,9 +99,15 @@ async function pollUntilStopped(port: number, timeoutMs = 60000, intervalMs = 20
 // Uses Node's http (no curl, no shell) — portable and works in the EH.
 function apacheAvailable(): Promise<boolean> {
   return new Promise((resolve) => {
-    const req = http.get('http://127.0.0.1/', (res) => { res.resume(); resolve(res.statusCode !== undefined); });
+    const req = http.get('http://127.0.0.1/', (res) => {
+      res.resume();
+      resolve(res.statusCode !== undefined);
+    });
     req.on('error', () => resolve(false));
-    req.setTimeout(4000, () => { req.destroy(); resolve(false); });
+    req.setTimeout(4000, () => {
+      req.destroy();
+      resolve(false);
+    });
   });
 }
 
@@ -98,10 +119,20 @@ function xdebugLoadedInApache(): boolean {
   const probePath = path.join(HTDOCS, '__probe.php');
   try {
     fs.writeFileSync(probePath, '<?php echo extension_loaded("xdebug") ? "XDEBUG-LOADED" : "XDEBUG-ABSENT";');
-    const out = execFileSync('curl', ['-s', 'http://127.0.0.1/xdebug-mcp-e2e/__probe.php'], { timeout: 4000, encoding: 'utf8' });
+    const out = execFileSync('curl', ['-s', 'http://127.0.0.1/xdebug-mcp-e2e/__probe.php'], {
+      timeout: 4000,
+      encoding: 'utf8',
+    });
     return out.includes('XDEBUG-LOADED');
-  } catch { return false; }
-  finally { try { fs.unlinkSync(probePath); } catch { /* probe already removed */ } }
+  } catch {
+    return false;
+  } finally {
+    try {
+      fs.unlinkSync(probePath);
+    } catch {
+      /* probe already removed */
+    }
+  }
 }
 
 // ── Suite ───────────────────────────────────────────────────────────
@@ -118,15 +149,21 @@ describe('Xdebug E2E Native - Web (Apache)', function () {
       console.log('[web-e2e] Apache not reachable on 127.0.0.1 — skipping web-flow tests.');
       this.skip();
     }
-    try { fs.mkdirSync(HTDOCS, { recursive: true }); }
-    catch {
+    try {
+      fs.mkdirSync(HTDOCS, { recursive: true });
+    } catch {
       console.log('[web-e2e] htdocs not writable — skipping web-flow tests.');
       this.skip();
     }
     if (!xdebugLoadedInApache()) {
-      console.log('[web-e2e] Xdebug not loaded in Apache\'s PHP — restart Apache so it re-reads php.ini, then retry. Skipping.');
-      try { fs.rmSync(HTDOCS, { recursive: true, force: true }); }
-      catch (e: unknown) { console.warn(`[web-e2e] htdocs cleanup: ${e instanceof Error ? e.message : String(e)}`); }
+      console.log(
+        "[web-e2e] Xdebug not loaded in Apache's PHP — restart Apache so it re-reads php.ini, then retry. Skipping."
+      );
+      try {
+        fs.rmSync(HTDOCS, { recursive: true, force: true });
+      } catch (e: unknown) {
+        console.warn(`[web-e2e] htdocs cleanup: ${e instanceof Error ? e.message : String(e)}`);
+      }
       this.skip();
     }
     fs.writeFileSync(TEST_PAGE_PATH, TEST_PAGE);
@@ -137,17 +174,25 @@ describe('Xdebug E2E Native - Web (Apache)', function () {
   after(async function () {
     this.timeout(15000);
     if (listenSession) {
-      try { await listenSession.customRequest('disconnect', { terminateDebuggee: true }); }
-      catch (err: unknown) {
+      try {
+        await listenSession.customRequest('disconnect', { terminateDebuggee: true });
+      } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         if (!/terminated|not found|No active/i.test(msg)) console.warn(`[web-e2e after] disconnect: ${msg}`);
       }
     }
-    try { fs.rmSync(HTDOCS, { recursive: true, force: true }); }
-    catch (err: unknown) { console.warn(`[web-e2e after] cleanup htdocs: ${err instanceof Error ? err.message : String(err)}`); }
+    try {
+      fs.rmSync(HTDOCS, { recursive: true, force: true });
+    } catch (err: unknown) {
+      console.warn(`[web-e2e after] cleanup htdocs: ${err instanceof Error ? err.message : String(err)}`);
+    }
     if (curlProc && !curlProc.killed) {
-      try { curlProc.kill(); } catch (err: unknown) {
-        if (!/ESRCH|not running/i.test(err instanceof Error ? err.message : String(err))) { /* process already gone */ }
+      try {
+        curlProc.kill();
+      } catch (err: unknown) {
+        if (!/ESRCH|not running/i.test(err instanceof Error ? err.message : String(err))) {
+          /* process already gone */
+        }
       }
     }
   });
@@ -160,9 +205,15 @@ describe('Xdebug E2E Native - Web (Apache)', function () {
 
     const sessionPromise = new Promise<vscode.DebugSession>((resolve) => {
       const sub = vscode.debug.onDidStartDebugSession((s) => {
-        if (s.type === 'php') { sub.dispose(); resolve(s); }
+        if (s.type === 'php') {
+          sub.dispose();
+          resolve(s);
+        }
       });
-      setTimeout(() => { sub.dispose(); resolve(undefined as any); }, 15000);
+      setTimeout(() => {
+        sub.dispose();
+        resolve(undefined as any);
+      }, 15000);
     });
 
     // Listen-only: no program. The adapter waits on 9003 for an incoming
@@ -190,7 +241,8 @@ describe('Xdebug E2E Native - Web (Apache)', function () {
 
     // Set the breakpoint via the MCP tool (the path the LLM would use).
     const setResp = await toolCall(port, 'set_breakpoint', {
-      file: TEST_PAGE_PATH, breakpoints: [{ line: BREAKPOINT_LINE }],
+      file: TEST_PAGE_PATH,
+      breakpoints: [{ line: BREAKPOINT_LINE }],
     });
     const setSc = setResp.result.structuredContent || setResp.result;
     assert.strictEqual(setSc.results[0].verified, true, 'breakpoint should verify against the htdocs page');
@@ -222,7 +274,7 @@ describe('Xdebug E2E Native - Web (Apache)', function () {
     const evalSc = evalResp.result.structuredContent || evalResp.result;
     assert.ok(
       String(evalSc.result ?? evalSc).includes('apache-xdebug-e2e'),
-      `evaluate $page should return "apache-xdebug-e2e", got: ${JSON.stringify(evalSc).slice(0, 200)}`,
+      `evaluate $page should return "apache-xdebug-e2e", got: ${JSON.stringify(evalSc).slice(0, 200)}`
     );
   });
 });

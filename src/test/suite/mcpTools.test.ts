@@ -20,12 +20,7 @@ import { getServerPort } from '../helpers/portResolver';
 
 // ── HTTP / JSON-RPC helpers ──────────────────────────────────────
 
-function mcpRequest(
-  port: number,
-  method: string,
-  params?: any,
-  id: number = 1,
-): Promise<any> {
+function mcpRequest(port: number, method: string, params?: any, id: number = 1): Promise<any> {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({ jsonrpc: '2.0', id, method, params });
     const req = http.request(
@@ -49,7 +44,7 @@ function mcpRequest(
             reject(new Error(`Parse error: ${data.slice(0, 200)}`));
           }
         });
-      },
+      }
     );
     req.on('error', reject);
     req.write(body);
@@ -76,7 +71,7 @@ async function initializeMcp(port: number): Promise<void> {
       capabilities: {},
       clientInfo: { name: 'integration-test', version: '0.0.0' },
     },
-    99,
+    99
   );
   assert.ok(initResp.result, `initialize should return result, got: ${JSON.stringify(initResp).slice(0, 200)}`);
   assert.ok(initResp.result.capabilities, 'initialize should include capabilities');
@@ -90,11 +85,7 @@ async function initializeMcp(port: number): Promise<void> {
 /**
  * Poll the MCP status tool until the active session reports stopped === true.
  */
-async function pollUntilStopped(
-  port: number,
-  timeoutMs = 5000,
-  intervalMs = 50,
-): Promise<void> {
+async function pollUntilStopped(port: number, timeoutMs = 5000, intervalMs = 50): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -113,12 +104,7 @@ async function pollUntilStopped(
  * Poll list_sessions until a specific session is no longer present
  * (terminated or disconnected).
  */
-async function pollUntilSessionGone(
-  port: number,
-  sessionId: string,
-  timeoutMs = 5000,
-  intervalMs = 50,
-): Promise<void> {
+async function pollUntilSessionGone(port: number, sessionId: string, timeoutMs = 5000, intervalMs = 50): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const resp = await toolCall(port, 'list_sessions');
@@ -127,9 +113,7 @@ async function pollUntilSessionGone(
     if (!found) return;
     await new Promise((r) => setTimeout(r, intervalMs));
   }
-  throw new Error(
-    `Timed out waiting for session ${sessionId} to be removed after ${timeoutMs}ms`,
-  );
+  throw new Error(`Timed out waiting for session ${sessionId} to be removed after ${timeoutMs}ms`);
 }
 
 async function stopDebugSession(timeout = 5000): Promise<void> {
@@ -231,8 +215,10 @@ describe('MCP Tools', function () {
       assert.ok(stack.inputSchema, 'stack should have inputSchema');
       // Check that key properties exist in inputSchema.
       const stackProps = stack.inputSchema.properties || {};
-      assert.ok('sessionId' in stackProps || stack.inputSchema.type === 'object',
-        'stack inputSchema should be an object');
+      assert.ok(
+        'sessionId' in stackProps || stack.inputSchema.type === 'object',
+        'stack inputSchema should be an object'
+      );
 
       const evaluate = tools.find((t) => t.name === 'evaluate_expr');
       assert.ok(evaluate, 'should have evaluate_expr tool');
@@ -253,12 +239,9 @@ describe('MCP Tools', function () {
       assert.ok(resp.result, 'prompts/list should return result');
       assert.ok(Array.isArray(resp.result.prompts), 'result.prompts should be an array');
 
-      const capabilityPrompt = resp.result.prompts.find(
-        (p: any) => p.name === 'xdebug_mcp_capabilities',
-      );
+      const capabilityPrompt = resp.result.prompts.find((p: any) => p.name === 'xdebug_mcp_capabilities');
       assert.ok(capabilityPrompt, 'should include xdebug_mcp_capabilities prompt');
-      assert.ok(capabilityPrompt.title || capabilityPrompt.description,
-        'prompt should have title or description');
+      assert.ok(capabilityPrompt.title || capabilityPrompt.description, 'prompt should have title or description');
     });
 
     it('resources/list returns xdebug://stack', async function () {
@@ -266,24 +249,17 @@ describe('MCP Tools', function () {
       assert.ok(resp.result, 'resources/list should return result');
       assert.ok(Array.isArray(resp.result.resources), 'result.resources should be an array');
 
-      const stackResource = resp.result.resources.find(
-        (r: any) => r.uri === 'xdebug://stack',
-      );
+      const stackResource = resp.result.resources.find((r: any) => r.uri === 'xdebug://stack');
       assert.ok(stackResource, 'should include xdebug://stack resource');
     });
 
     it('resources/templates/list returns xdebug://variables/{frameId} template', async function () {
       const resp = await mcpRequest(port, 'resources/templates/list');
       assert.ok(resp.result, 'resources/templates/list should return result');
-      assert.ok(
-        Array.isArray(resp.result.resourceTemplates),
-        'result.resourceTemplates should be an array',
-      );
+      assert.ok(Array.isArray(resp.result.resourceTemplates), 'result.resourceTemplates should be an array');
 
       const varTemplate = resp.result.resourceTemplates.find(
-        (rt: any) =>
-          rt.uriTemplate === 'xdebug://variables/{frameId}' ||
-          rt.name === 'Frame Variables',
+        (rt: any) => rt.uriTemplate === 'xdebug://variables/{frameId}' || rt.name === 'Frame Variables'
       );
       assert.ok(varTemplate, 'should include variables resource template');
     });
@@ -304,8 +280,12 @@ describe('MCP Tools', function () {
         await stopDebugSession();
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.includes('not found') && !msg.includes('No active') &&
-            !msg.includes('terminated') && !msg.includes('disconnect')) {
+        if (
+          !msg.includes('not found') &&
+          !msg.includes('No active') &&
+          !msg.includes('terminated') &&
+          !msg.includes('disconnect')
+        ) {
           console.warn(`[afterEach cleanup] Unexpected error: ${msg}`);
         }
       }
@@ -434,8 +414,7 @@ describe('MCP Tools', function () {
       assert.strictEqual(sc.server, 'running', 'diagnostics should report server running');
       assert.ok(Array.isArray(sc.recommendations), 'diagnostics should have recommendations');
       assert.ok(Array.isArray(sc.sessions), 'diagnostics should have sessions array');
-      assert.strictEqual(sc.sessionCount, sc.sessions.length,
-        'sessionCount should match sessions length');
+      assert.strictEqual(sc.sessionCount, sc.sessions.length, 'sessionCount should match sessions length');
     });
 
     it('list_sessions: returns active mock session', async function () {
@@ -445,9 +424,7 @@ describe('MCP Tools', function () {
       assert.ok(Array.isArray(sc.sessions), 'should return sessions array');
       assert.ok(sc.sessions.length > 0, 'should have at least one session');
 
-      const found = sc.sessions.some(
-        (s: any) => s.id === sessionId,
-      );
+      const found = sc.sessions.some((s: any) => s.id === sessionId);
       assert.ok(found, `session ${sessionId} should be in list_sessions`);
     });
   });
@@ -464,8 +441,12 @@ describe('MCP Tools', function () {
         await stopDebugSession();
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.includes('not found') && !msg.includes('No active') &&
-            !msg.includes('terminated') && !msg.includes('disconnect')) {
+        if (
+          !msg.includes('not found') &&
+          !msg.includes('No active') &&
+          !msg.includes('terminated') &&
+          !msg.includes('disconnect')
+        ) {
           console.warn(`[afterEach cleanup] Unexpected error: ${msg}`);
         }
       }
@@ -569,8 +550,12 @@ describe('MCP Tools', function () {
         await stopDebugSession();
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.includes('not found') && !msg.includes('No active') &&
-            !msg.includes('terminated') && !msg.includes('disconnect')) {
+        if (
+          !msg.includes('not found') &&
+          !msg.includes('No active') &&
+          !msg.includes('terminated') &&
+          !msg.includes('disconnect')
+        ) {
           console.warn(`[afterEach cleanup] Unexpected error: ${msg}`);
         }
       }
@@ -704,8 +689,12 @@ describe('MCP Tools', function () {
         await stopDebugSession();
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.includes('not found') && !msg.includes('No active') &&
-            !msg.includes('terminated') && !msg.includes('disconnect')) {
+        if (
+          !msg.includes('not found') &&
+          !msg.includes('No active') &&
+          !msg.includes('terminated') &&
+          !msg.includes('disconnect')
+        ) {
           console.warn(`[afterEach cleanup] Unexpected error: ${msg}`);
         }
       }
@@ -737,7 +726,7 @@ describe('MCP Tools', function () {
       // The mock prepends "[watch] " for watch context.
       assert.ok(
         sc.result.includes('watch') || sc.result === '[watch] 100',
-        `result should indicate watch context, got: ${sc.result}`,
+        `result should indicate watch context, got: ${sc.result}`
       );
     });
 
@@ -761,8 +750,12 @@ describe('MCP Tools', function () {
         await stopDebugSession();
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.includes('not found') && !msg.includes('No active') &&
-            !msg.includes('terminated') && !msg.includes('disconnect')) {
+        if (
+          !msg.includes('not found') &&
+          !msg.includes('No active') &&
+          !msg.includes('terminated') &&
+          !msg.includes('disconnect')
+        ) {
           console.warn(`[afterEach cleanup] Unexpected error: ${msg}`);
         }
       }
@@ -804,10 +797,7 @@ describe('MCP Tools', function () {
       });
       // Should return an error.
       assert.ok(resp.error, 'should return error for invalid frameId');
-      assert.ok(
-        resp.error.message || resp.error.code,
-        'error should have message or code',
-      );
+      assert.ok(resp.error.message || resp.error.code, 'error should have message or code');
     });
   });
 
@@ -823,14 +813,16 @@ describe('MCP Tools', function () {
       const listResp = await toolCall(port, 'list_sessions');
       const listSc = listResp.result.structuredContent || listResp.result;
       const found = listSc.sessions.some((s: any) => s.id === session.id);
-      assert.strictEqual(found, true,
-        'session should still be in list_sessions after continue (Fix 1: no auto-terminate)');
+      assert.strictEqual(
+        found,
+        true,
+        'session should still be in list_sessions after continue (Fix 1: no auto-terminate)'
+      );
 
       // Stack should still work — mock always returns frames regardless of running state.
       const stackResp = await toolCall(port, 'stack');
       const stackSc = stackResp.result.structuredContent || stackResp.result;
-      assert.strictEqual(stackSc.success, true,
-        'stack should succeed after continue (session is alive)');
+      assert.strictEqual(stackSc.success, true, 'stack should succeed after continue (session is alive)');
       assert.ok(Array.isArray(stackSc.frames), 'should return frames');
       assert.ok(stackSc.frames.length > 0, 'should have at least one frame');
 
@@ -892,8 +884,12 @@ describe('MCP Tools', function () {
         await stopDebugSession();
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.includes('not found') && !msg.includes('No active') &&
-            !msg.includes('terminated') && !msg.includes('disconnect')) {
+        if (
+          !msg.includes('not found') &&
+          !msg.includes('No active') &&
+          !msg.includes('terminated') &&
+          !msg.includes('disconnect')
+        ) {
           console.warn(`[afterEach cleanup] Unexpected error: ${msg}`);
         }
       }

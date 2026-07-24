@@ -32,14 +32,11 @@ async function startDebugSession(): Promise<vscode.DebugSession> {
     }, 5000);
   });
 
-  const started = await vscode.debug.startDebugging(
-    workspaceFolder,
-    {
-      type: 'xdebug-mcp-test',
-      name: 'Test',
-      request: 'launch',
-    }
-  );
+  const started = await vscode.debug.startDebugging(workspaceFolder, {
+    type: 'xdebug-mcp-test',
+    name: 'Test',
+    request: 'launch',
+  });
 
   assert.ok(started, 'startDebugging should return true');
 
@@ -98,10 +95,11 @@ describe('DAP Bridge', function () {
         }, 5000);
       });
 
-      const started = await vscode.debug.startDebugging(
-        workspaceFolder,
-        { type: 'xdebug-mcp-test', name: 'Test', request: 'launch' }
-      );
+      const started = await vscode.debug.startDebugging(workspaceFolder, {
+        type: 'xdebug-mcp-test',
+        name: 'Test',
+        request: 'launch',
+      });
       assert.ok(started, 'startDebugging should return true');
 
       const session = await sessionPromise;
@@ -132,8 +130,7 @@ describe('DAP Bridge', function () {
       await session.customRequest('disconnect', { terminateDebuggee: true });
       await terminatedPromise;
 
-      assert.strictEqual(terminatedFired, true,
-        'onDidTerminateDebugSession should fire on disconnect');
+      assert.strictEqual(terminatedFired, true, 'onDidTerminateDebugSession should fire on disconnect');
     });
   });
 
@@ -213,8 +210,12 @@ describe('DAP Bridge', function () {
         await stopDebugSession(session);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.includes('not found') && !msg.includes('No active') &&
-            !msg.includes('terminated') && !msg.includes('disconnect')) {
+        if (
+          !msg.includes('not found') &&
+          !msg.includes('No active') &&
+          !msg.includes('terminated') &&
+          !msg.includes('disconnect')
+        ) {
           console.warn(`[afterEach cleanup] Unexpected error: ${msg}`);
         }
       }
@@ -223,41 +224,41 @@ describe('DAP Bridge', function () {
     it('next returns success', async function () {
       await session.customRequest('next', { threadId: 1 });
       // Session is still active after step — verify by calling stackTrace.
-      const response = await session.customRequest('stackTrace', {
+      const response = (await session.customRequest('stackTrace', {
         threadId: 1,
         startFrame: 0,
         levels: 1,
-      }) as { stackFrames?: unknown[] };
+      })) as { stackFrames?: unknown[] };
       assert.ok(response.stackFrames, 'stackTrace should succeed after next');
     });
 
     it('stepIn returns success', async function () {
       await session.customRequest('stepIn', { threadId: 1 });
-      const response = await session.customRequest('stackTrace', {
+      const response = (await session.customRequest('stackTrace', {
         threadId: 1,
         startFrame: 0,
         levels: 1,
-      }) as { stackFrames?: unknown[] };
+      })) as { stackFrames?: unknown[] };
       assert.ok(response.stackFrames, 'stackTrace should succeed after stepIn');
     });
 
     it('stepOut returns success', async function () {
       await session.customRequest('stepOut', { threadId: 1 });
-      const response = await session.customRequest('stackTrace', {
+      const response = (await session.customRequest('stackTrace', {
         threadId: 1,
         startFrame: 0,
         levels: 1,
-      }) as { stackFrames?: unknown[] };
+      })) as { stackFrames?: unknown[] };
       assert.ok(response.stackFrames, 'stackTrace should succeed after stepOut');
     });
 
     it('pause returns success', async function () {
       await session.customRequest('pause', { threadId: 1 });
-      const response = await session.customRequest('stackTrace', {
+      const response = (await session.customRequest('stackTrace', {
         threadId: 1,
         startFrame: 0,
         levels: 1,
-      }) as { stackFrames?: unknown[] };
+      })) as { stackFrames?: unknown[] };
       assert.ok(response.stackFrames, 'stackTrace should succeed after pause');
     });
 
@@ -276,11 +277,11 @@ describe('DAP Bridge', function () {
       terminatedSub.dispose();
 
       // Session should still be alive after restart.
-      const response = await session.customRequest('stackTrace', {
+      const response = (await session.customRequest('stackTrace', {
         threadId: 1,
         startFrame: 0,
         levels: 1,
-      }) as { stackFrames?: unknown[] };
+      })) as { stackFrames?: unknown[] };
       assert.ok(response.stackFrames, 'stackTrace should succeed after restart');
       assert.ok(!terminatedFired, 'terminated event should not fire on restart');
     });
@@ -304,8 +305,7 @@ describe('DAP Bridge', function () {
       await session.customRequest('terminate', {});
 
       await terminatedPromise;
-      assert.strictEqual(terminatedFired, true,
-        'onDidTerminateDebugSession should fire on terminate');
+      assert.strictEqual(terminatedFired, true, 'onDidTerminateDebugSession should fire on terminate');
     });
 
     it('disconnect fires terminated event', async function () {
@@ -327,8 +327,7 @@ describe('DAP Bridge', function () {
       await session.customRequest('disconnect', {});
 
       await terminatedPromise;
-      assert.strictEqual(terminatedFired, true,
-        'onDidTerminateDebugSession should fire on disconnect');
+      assert.strictEqual(terminatedFired, true, 'onDidTerminateDebugSession should fire on disconnect');
     });
 
     it('setExceptionBreakpoints succeeds', async function () {

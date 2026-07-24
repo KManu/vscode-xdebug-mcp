@@ -74,7 +74,12 @@ vi.mock('vscode', async () => {
       onDidChangeActiveDebugSession: vi.fn(),
       onDidChangeBreakpoints: vi.fn((listener: any) => {
         bpChangeListeners.push(listener);
-        return { dispose: vi.fn(() => { const idx = bpChangeListeners.indexOf(listener); if (idx >= 0) bpChangeListeners.splice(idx, 1); }) };
+        return {
+          dispose: vi.fn(() => {
+            const idx = bpChangeListeners.indexOf(listener);
+            if (idx >= 0) bpChangeListeners.splice(idx, 1);
+          }),
+        };
       }),
       addBreakpoints: vi.fn((bps: any[]) => {
         // Fire onDidChangeBreakpoints callbacks so pending verifications resolve synchronously.
@@ -91,18 +96,40 @@ vi.mock('vscode', async () => {
       },
     },
     Position: vi.fn().mockImplementation((line: number, character: number) => ({ line, character })),
-    Location: vi.fn().mockImplementation((uri: any, position: any) => ({ uri, range: { start: position, end: position } })),
+    Location: vi
+      .fn()
+      .mockImplementation((uri: any, position: any) => ({ uri, range: { start: position, end: position } })),
     // Use real class constructors so instanceof checks work in dapBridge.ts onDidChangeBreakpoints.
     SourceBreakpoint: class {
-      location: any; enabled: boolean; condition?: string; hitCondition?: string; logMessage?: string;
-      constructor(location: any, enabled: boolean = true, condition?: string, hitCondition?: string, logMessage?: string) {
-        this.location = location; this.enabled = enabled; this.condition = condition; this.hitCondition = hitCondition; this.logMessage = logMessage;
+      location: any;
+      enabled: boolean;
+      condition?: string;
+      hitCondition?: string;
+      logMessage?: string;
+      constructor(
+        location: any,
+        enabled: boolean = true,
+        condition?: string,
+        hitCondition?: string,
+        logMessage?: string
+      ) {
+        this.location = location;
+        this.enabled = enabled;
+        this.condition = condition;
+        this.hitCondition = hitCondition;
+        this.logMessage = logMessage;
       }
     } as any,
     FunctionBreakpoint: class {
-      name: string; enabled: boolean; condition?: string; hitCondition?: string;
+      name: string;
+      enabled: boolean;
+      condition?: string;
+      hitCondition?: string;
       constructor(name: string, enabled: boolean = true, condition?: string, hitCondition?: string) {
-        this.name = name; this.enabled = enabled; this.condition = condition; this.hitCondition = hitCondition;
+        this.name = name;
+        this.enabled = enabled;
+        this.condition = condition;
+        this.hitCondition = hitCondition;
       }
     } as any,
   };

@@ -195,7 +195,9 @@ describe('portFile', () => {
       try {
         process.kill(fakePid, 0);
         fakePidAlive = true;
-      } catch { /* expected */ }
+      } catch {
+        /* expected */
+      }
 
       writePortFile({
         uri: 'http://127.0.0.1:3098/mcp',

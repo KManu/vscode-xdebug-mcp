@@ -30,11 +30,13 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
       if (!res.headersSent) {
         res.statusCode = 408;
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({
-          jsonrpc: '2.0',
-          error: { code: -32000, message: 'Request timeout' },
-          id: null
-        }));
+        res.end(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            error: { code: -32000, message: 'Request timeout' },
+            id: null,
+          })
+        );
       }
       req.destroy();
     });
@@ -44,11 +46,13 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
     if (url.pathname === '/health' && req.method === 'GET') {
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({
-        status: 'ok',
-        version: options.version,
-        uptime: process.uptime()
-      }));
+      res.end(
+        JSON.stringify({
+          status: 'ok',
+          version: options.version,
+          uptime: process.uptime(),
+        })
+      );
       return;
     }
 
@@ -63,7 +67,7 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
     const server = makeServer({ version: options.version });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
-      enableJsonResponse: true
+      enableJsonResponse: true,
     });
 
     // Normalize headers so the MCP SDK sees the expected Accept/Content-Type.
@@ -88,7 +92,7 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
         let size = 0;
         const chunks: Buffer[] = [];
 
-        req.on('data', chunk => {
+        req.on('data', (chunk) => {
           const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
           size += buffer.length;
           if (size > MAX_BODY_BYTES) {
@@ -151,9 +155,9 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
               error: {
                 code: -32700,
                 message: status === 413 ? 'Payload too large' : 'Parse error',
-                data: message
+                data: message,
               },
-              id: null
+              id: null,
             })
           );
         }
@@ -223,11 +227,17 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
         if (portAttempts >= MAX_PORT_ATTEMPTS) {
           serverUriPromise = undefined;
           runningServer = undefined;
-          reject(new Error(`Failed to bind MCP server after ${MAX_PORT_ATTEMPTS} attempts. Port ${DEFAULT_PORT} and dynamic ports are all occupied.`));
+          reject(
+            new Error(
+              `Failed to bind MCP server after ${MAX_PORT_ATTEMPTS} attempts. Port ${DEFAULT_PORT} and dynamic ports are all occupied.`
+            )
+          );
           return;
         }
         const fallbackPort = portAttempts === 1 ? 0 : undefined;
-        log.info(`Port ${DEFAULT_PORT} in use, falling back to dynamic port (attempt ${portAttempts}/${MAX_PORT_ATTEMPTS - 1})`);
+        log.info(
+          `Port ${DEFAULT_PORT} in use, falling back to dynamic port (attempt ${portAttempts}/${MAX_PORT_ATTEMPTS - 1})`
+        );
         tryListen(fallbackPort ?? 0);
       } else {
         serverUriPromise = undefined;

@@ -32,7 +32,11 @@ describe('mcpJson', () => {
 
     it('should parse valid JSON', () => {
       fs.mkdirSync(vscodeDir, { recursive: true });
-      fs.writeFileSync(mcpPath, JSON.stringify({ servers: { other: { type: 'http', url: 'http://example.com' } } }), 'utf8');
+      fs.writeFileSync(
+        mcpPath,
+        JSON.stringify({ servers: { other: { type: 'http', url: 'http://example.com' } } }),
+        'utf8'
+      );
       const result = readWorkspaceMcpJson(testRoot);
       expect(result).not.toBeNull();
       expect(result).toEqual({ servers: { other: { type: 'http', url: 'http://example.com' } } });
@@ -156,11 +160,15 @@ describe('mcpJson', () => {
 
     it('should update existing mcp.json without losing other servers', () => {
       fs.mkdirSync(vscodeDir, { recursive: true });
-      fs.writeFileSync(mcpPath, JSON.stringify({
-        servers: {
-          playwright: { type: 'stdio', command: 'npx' },
-        },
-      }), 'utf8');
+      fs.writeFileSync(
+        mcpPath,
+        JSON.stringify({
+          servers: {
+            playwright: { type: 'stdio', command: 'npx' },
+          },
+        }),
+        'utf8'
+      );
 
       const ok = writeWorkspaceMcpJson(testRoot, 'http://127.0.0.1:4000/mcp');
       expect(ok).toBe(true);
@@ -175,11 +183,15 @@ describe('mcpJson', () => {
 
     it('should update xdebug URL when it already exists', () => {
       fs.mkdirSync(vscodeDir, { recursive: true });
-      fs.writeFileSync(mcpPath, JSON.stringify({
-        servers: {
-          xdebug: { type: 'http', url: 'http://127.0.0.1:5000/mcp' },
-        },
-      }), 'utf8');
+      fs.writeFileSync(
+        mcpPath,
+        JSON.stringify({
+          servers: {
+            xdebug: { type: 'http', url: 'http://127.0.0.1:5000/mcp' },
+          },
+        }),
+        'utf8'
+      );
 
       const ok = writeWorkspaceMcpJson(testRoot, 'http://127.0.0.1:6000/mcp');
       expect(ok).toBe(true);

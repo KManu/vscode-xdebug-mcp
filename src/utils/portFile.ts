@@ -39,7 +39,11 @@ export function writePortFile(info: PortInfo): void {
     const message = error instanceof Error ? error.message : String(error);
     log.error(`Failed to write port file: ${message}`);
     // Best-effort cleanup of tmp file.
-    try { fs.unlinkSync(TMP_FILE); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(TMP_FILE);
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -144,5 +148,9 @@ export function cleanupPortFile(): void {
     // File may not exist; that's fine.
   }
   // Best-effort removal of tmp file.
-  try { fs.unlinkSync(TMP_FILE); } catch { /* ignore */ }
+  try {
+    fs.unlinkSync(TMP_FILE);
+  } catch {
+    /* ignore */
+  }
 }

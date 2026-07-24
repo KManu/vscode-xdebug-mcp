@@ -225,7 +225,7 @@ describe('dapBridge path resolution (resolveFileUri via setFileBreakpoints)', ()
     Object.defineProperty(vscode.workspace, 'workspaceFolders', {
       value: undefined,
       writable: true,
-      configurable: true
+      configurable: true,
     });
     // Reset fs.stat mock to succeed by default
     (vscode.workspace.fs.stat as any).mockResolvedValue({});
@@ -242,7 +242,7 @@ describe('dapBridge path resolution (resolveFileUri via setFileBreakpoints)', ()
 
       await dapBridge.setFileBreakpoints({
         file: '/var/www/html/index.php',
-        breakpoints: [{ line: 10 }]
+        breakpoints: [{ line: 10 }],
       });
 
       expect(vscode.Uri.file).toHaveBeenCalledWith('/var/www/html/index.php');
@@ -256,7 +256,7 @@ describe('dapBridge path resolution (resolveFileUri via setFileBreakpoints)', ()
 
       await dapBridge.setFileBreakpoints({
         file: 'C:\\path\\to\\file.php',
-        breakpoints: [{ line: 10 }]
+        breakpoints: [{ line: 10 }],
       });
 
       expect(vscode.Uri.file).toHaveBeenCalledWith('C:\\path\\to\\file.php');
@@ -270,7 +270,7 @@ describe('dapBridge path resolution (resolveFileUri via setFileBreakpoints)', ()
       Object.defineProperty(vscode.workspace, 'workspaceFolders', {
         value: [folder1, folder2],
         writable: true,
-        configurable: true
+        configurable: true,
       });
 
       const session = mockSession({ id: 'session-1' });
@@ -279,7 +279,7 @@ describe('dapBridge path resolution (resolveFileUri via setFileBreakpoints)', ()
 
       await dapBridge.setFileBreakpoints({
         file: 'src/index.php',
-        breakpoints: [{ line: 10 }]
+        breakpoints: [{ line: 10 }],
       });
 
       // Uri.joinPath should be called with the first folder's uri
@@ -305,7 +305,7 @@ describe('dapBridge path resolution (resolveFileUri via setFileBreakpoints)', ()
       Object.defineProperty(vscode.workspace, 'workspaceFolders', {
         value: [folder1, folder2],
         writable: true,
-        configurable: true
+        configurable: true,
       });
 
       const session = mockSession({ id: 'session-1' });
@@ -314,7 +314,7 @@ describe('dapBridge path resolution (resolveFileUri via setFileBreakpoints)', ()
 
       await dapBridge.setFileBreakpoints({
         file: 'shared/util.php',
-        breakpoints: [{ line: 10 }]
+        breakpoints: [{ line: 10 }],
       });
 
       // Should have searched in folder1 first (joinPath was called), found file missing (stat failed), then searched in folder2
@@ -330,7 +330,7 @@ describe('dapBridge path resolution (resolveFileUri via setFileBreakpoints)', ()
       Object.defineProperty(vscode.workspace, 'workspaceFolders', {
         value: [folder1],
         writable: true,
-        configurable: true
+        configurable: true,
       });
 
       // Mock fs.stat to always fail (file doesn't exist)
@@ -344,7 +344,7 @@ describe('dapBridge path resolution (resolveFileUri via setFileBreakpoints)', ()
 
       await dapBridge.setFileBreakpoints({
         file: 'nonexistent.php',
-        breakpoints: [{ line: 10 }]
+        breakpoints: [{ line: 10 }],
       });
 
       // Since file doesn't exist in any folder, it should fall back to firstFolder.joinPath(relative)
@@ -359,7 +359,7 @@ describe('dapBridge path resolution (resolveFileUri via setFileBreakpoints)', ()
 
       await dapBridge.setFileBreakpoints({
         file: 'file:///var/www/html/index.php',
-        breakpoints: [{ line: 10 }]
+        breakpoints: [{ line: 10 }],
       });
 
       expect(vscode.Uri.parse).toHaveBeenCalledWith('file:///var/www/html/index.php');
@@ -376,7 +376,7 @@ describe('dapBridge breakpoint lifecycle', () => {
     Object.defineProperty(vscode.workspace, 'workspaceFolders', {
       value: undefined,
       writable: true,
-      configurable: true
+      configurable: true,
     });
     (vscode.workspace.fs.stat as any).mockResolvedValue({});
     vi.clearAllMocks();
@@ -389,7 +389,7 @@ describe('dapBridge breakpoint lifecycle', () => {
       Object.defineProperty(vscode.workspace, 'workspaceFolders', {
         value: [folder],
         writable: true,
-        configurable: true
+        configurable: true,
       });
 
       const session = mockSession({ id: 'session-1' });
@@ -398,7 +398,7 @@ describe('dapBridge breakpoint lifecycle', () => {
 
       await dapBridge.setFileBreakpoints({
         file: '/workspace/project/src/index.php',
-        breakpoints: [{ line: 10 }, { line: 20 }]
+        breakpoints: [{ line: 10 }, { line: 20 }],
       });
 
       const breakpoints = dapBridge.__getFileBreakpointsForTesting();
@@ -413,7 +413,7 @@ describe('dapBridge breakpoint lifecycle', () => {
       Object.defineProperty(vscode.workspace, 'workspaceFolders', {
         value: [folder],
         writable: true,
-        configurable: true
+        configurable: true,
       });
 
       const session = mockSession({ id: 'session-1' });
@@ -423,7 +423,7 @@ describe('dapBridge breakpoint lifecycle', () => {
       // Set initial breakpoints
       await dapBridge.setFileBreakpoints({
         file: '/workspace/project/src/index.php',
-        breakpoints: [{ line: 10 }]
+        breakpoints: [{ line: 10 }],
       });
 
       // Verify removeBreakpoints was called once (to remove old ones before adding new)
@@ -432,7 +432,7 @@ describe('dapBridge breakpoint lifecycle', () => {
       // Reset breakpoints on same file
       await dapBridge.setFileBreakpoints({
         file: '/workspace/project/src/index.php',
-        breakpoints: [{ line: 20 }, { line: 30 }]
+        breakpoints: [{ line: 20 }, { line: 30 }],
       });
 
       // removeBreakpoints should have been called again when resetting
@@ -446,7 +446,7 @@ describe('dapBridge breakpoint lifecycle', () => {
       Object.defineProperty(vscode.workspace, 'workspaceFolders', {
         value: [folder],
         writable: true,
-        configurable: true
+        configurable: true,
       });
 
       const session = mockSession({ id: 'session-1' });
@@ -456,7 +456,7 @@ describe('dapBridge breakpoint lifecycle', () => {
       // Set initial breakpoints
       await dapBridge.setFileBreakpoints({
         file: '/workspace/project/src/index.php',
-        breakpoints: [{ line: 10 }]
+        breakpoints: [{ line: 10 }],
       });
 
       let breakpoints = dapBridge.__getFileBreakpointsForTesting();
@@ -464,7 +464,7 @@ describe('dapBridge breakpoint lifecycle', () => {
 
       // Clear breakpoints via clearFileBreakpoints
       await dapBridge.clearFileBreakpoints({
-        file: '/workspace/project/src/index.php'
+        file: '/workspace/project/src/index.php',
       });
 
       breakpoints = dapBridge.__getFileBreakpointsForTesting();
@@ -477,7 +477,7 @@ describe('dapBridge breakpoint lifecycle', () => {
       Object.defineProperty(vscode.workspace, 'workspaceFolders', {
         value: [folder],
         writable: true,
-        configurable: true
+        configurable: true,
       });
 
       const session = mockSession({ id: 'session-1' });
@@ -487,7 +487,7 @@ describe('dapBridge breakpoint lifecycle', () => {
       await dapBridge.setFileBreakpoints({
         file: '/workspace/project/src/index.php',
         breakpoints: [{ line: 10 }],
-        sourceModified: true
+        sourceModified: true,
       });
 
       // verify addBreakpoints was called
@@ -505,10 +505,7 @@ describe('dapBridge breakpoint lifecycle', () => {
       vscode.debug.activeDebugSession = session;
 
       await dapBridge.setFunctionBreakpoints({
-        breakpoints: [
-          { name: 'myFunction' },
-          { name: 'anotherFunction' }
-        ]
+        breakpoints: [{ name: 'myFunction' }, { name: 'anotherFunction' }],
       });
 
       const funcs = dapBridge.__getFunctionBreakpointsForTesting();
@@ -523,7 +520,7 @@ describe('dapBridge breakpoint lifecycle', () => {
 
       // Set initial function breakpoints
       await dapBridge.setFunctionBreakpoints({
-        breakpoints: [{ name: 'oldFunction' }]
+        breakpoints: [{ name: 'oldFunction' }],
       });
 
       let funcs = dapBridge.__getFunctionBreakpointsForTesting();
@@ -531,10 +528,7 @@ describe('dapBridge breakpoint lifecycle', () => {
 
       // Replace with new function breakpoints
       await dapBridge.setFunctionBreakpoints({
-        breakpoints: [
-          { name: 'newFunction1' },
-          { name: 'newFunction2' }
-        ]
+        breakpoints: [{ name: 'newFunction1' }, { name: 'newFunction2' }],
       });
 
       funcs = dapBridge.__getFunctionBreakpointsForTesting();
@@ -553,12 +547,12 @@ describe('dapBridge breakpoint lifecycle', () => {
       vscode.debug.activeDebugSession = session;
 
       await dapBridge.setExceptionBreakpoints({
-        filters: ['AllExceptions', 'UnhandledExceptions']
+        filters: ['AllExceptions', 'UnhandledExceptions'],
       });
 
       expect(session.customRequest).toHaveBeenCalledWith('setExceptionBreakpoints', {
         filters: ['AllExceptions', 'UnhandledExceptions'],
-        exceptionOptions: undefined
+        exceptionOptions: undefined,
       });
     });
   });

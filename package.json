@@ -88,6 +88,7 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.5",
     "@types/node": "^24.9.1",
     "@types/vscode": "^1.105.0",
     "@vscode/test-cli": "^0.0.12",
