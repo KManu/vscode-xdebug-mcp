@@ -409,6 +409,37 @@ describe('server tool schema validation', () => {
     });
   });
 
+  // Regression: structuredResult() injects success:true, so advertised outputSchemas
+  // must allow it — otherwise real MCP clients (SDK validates structuredContent
+  // against the tool's outputSchema from tools/list) reject every call.
+  describe('structured content vs advertised outputSchema', () => {
+    it('set_breakpoint structuredContent validates against its outputSchema', async () => {
+      const server = makeServer({ version: '0.0.1' });
+      const tool = (server as any)._registeredTools['set_breakpoint'];
+      expect(tool?.outputSchema).toBeDefined();
+
+      const result = await tool.callback(
+        { file: '/path/to/file.php', breakpoints: [{ line: 10 }] },
+        undefined
+      );
+      expect(result.structuredContent).toBeDefined();
+      expect(tool.outputSchema.safeParse(result.structuredContent).success).toBe(true);
+    });
+
+    it('set_logpoint structuredContent validates against its outputSchema', async () => {
+      const server = makeServer({ version: '0.0.1' });
+      const tool = (server as any)._registeredTools['set_logpoint'];
+      expect(tool?.outputSchema).toBeDefined();
+
+      const result = await tool.callback(
+        { file: '/path/to/file.php', logpoints: [{ line: 10, logMessage: 'hit' }] },
+        undefined
+      );
+      expect(result.structuredContent).toBeDefined();
+      expect(tool.outputSchema.safeParse(result.structuredContent).success).toBe(true);
+    });
+  });
+
   describe('clear_breakpoints tool', () => {
     it('should accept valid input with required file', () => {
       const server = makeServer({ version: '0.0.1' });
@@ -1584,9 +1615,11 @@ describe('server tool outputSchema verification', () => {
       expect(tool).toBeDefined();
       expect(tool.outputSchema).toBeDefined();
 
-      // Verify the schema structure by parsing valid data
+      // Verify the schema structure by parsing valid data.
+      // NOTE: structuredResult() always injects success:true, so the advertised
+      // outputSchema must allow it (regression: SDK clients reject calls otherwise).
       const schema = tool.outputSchema;
-      const validResult = { results: [{ verified: true, message: 'ok' }] };
+      const validResult = { success: true, results: [{ verified: true, message: 'ok' }] };
       const parsed = schema.safeParse(validResult);
       expect(parsed.success).toBe(true);
     });
@@ -1619,7 +1652,7 @@ describe('server tool outputSchema verification', () => {
       expect(tool.outputSchema).toBeDefined();
 
       const schema = tool.outputSchema;
-      const validResult = { results: [{ verified: true }] };
+      const validResult = { success: true, results: [{ verified: true }] };
       const parsed = schema.safeParse(validResult);
       expect(parsed.success).toBe(true);
     });

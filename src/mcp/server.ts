@@ -500,6 +500,7 @@ export function makeServer(options: { version?: string } = {}): McpServer {
         )
       },
       outputSchema: {
+        success: z.literal(true),
         results: z.array(
           z.object({
             verified: z.boolean(),
@@ -538,6 +539,7 @@ export function makeServer(options: { version?: string } = {}): McpServer {
         )
       },
       outputSchema: {
+        success: z.literal(true),
         results: z.array(
           z.object({
             verified: z.boolean(),
