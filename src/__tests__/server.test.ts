@@ -466,12 +466,19 @@ describe('server tool schema validation', () => {
 
         // Drive the actual callback with a rejecting DAP call so safeHandler's
         // errorResult() emits the real error shape (not a hand-constructed one).
-        (dapBridge.setFileBreakpoints as any).mockRejectedValueOnce(new Error('boom: session not found'));
-
-        const result = await tool.callback(args, undefined);
-        expect(result.structuredContent).toEqual({ success: false, error: 'boom: session not found' });
-        expect(tool.outputSchema.safeParse(result.structuredContent).success).toBe(true);
-        expect(compileClientValidator(tool)(result.structuredContent)).toBe(true);
+        // NOTE: mockRejectedValueOnce queues a one-time rejection that
+        // vi.clearAllMocks() does NOT strip — reset it explicitly in finally so
+        // the queue cannot leak into later tests in this file.
+        try {
+          (dapBridge.setFileBreakpoints as any).mockRejectedValueOnce(new Error('boom: session not found'));
+          const result = await tool.callback(args, undefined);
+          expect(result.structuredContent).toEqual({ success: false, error: 'boom: session not found' });
+          expect(tool.outputSchema.safeParse(result.structuredContent).success).toBe(true);
+          expect(compileClientValidator(tool)(result.structuredContent)).toBe(true);
+        } finally {
+          (dapBridge.setFileBreakpoints as any).mockReset();
+          (dapBridge.setFileBreakpoints as any).mockResolvedValue([{ verified: true }]);
+        }
       });
     }
   });
