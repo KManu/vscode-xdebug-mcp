@@ -44,7 +44,7 @@ const fakeSession = {
   type: 'php',
   configuration: { name: 'Listen for Xdebug', type: 'php' },
   workspaceFolder: { uri: { fsPath: fakeWorkspacePath }, name: 'test-workspace', index: 0 },
-  state: 2,
+  state: 1, // DebugState.Active (1 = Active, 0 = Inactive, 2 = Terminated)
   async customRequest(command, args = {}) {
     switch (command) {
       case 'threads':
@@ -140,8 +140,8 @@ const vscodeStub = {
     }
   },
   FunctionBreakpoint: class {
-    constructor(name, enabled = true, condition, hitCondition) {
-      this.name = name; this.enabled = enabled; this.condition = condition; this.hitCondition = hitCondition;
+    constructor(name, enabled = true, condition, hitCondition, logMessage) {
+      this.name = name; this.enabled = enabled; this.condition = condition; this.hitCondition = hitCondition; this.logMessage = logMessage;
     }
   },
 };

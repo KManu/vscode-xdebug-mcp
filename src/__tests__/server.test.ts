@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { z } from 'zod';
+import Ajv from 'ajv';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 
 // vscode mock is configured globally in src/__tests__/setup.ts
 
@@ -410,34 +412,54 @@ describe('server tool schema validation', () => {
   });
 
   // Regression: structuredResult() injects success:true, so advertised outputSchemas
-  // must allow it — otherwise real MCP clients (SDK validates structuredContent
-  // against the tool's outputSchema from tools/list) reject every call.
+  // must allow it — otherwise real MCP clients reject every call. The SDK server
+  // advertises the schema as JSON (zodToJsonSchema → additionalProperties: false)
+  // and the SDK client validates each result's structuredContent against it with
+  // Ajv (client/index.js cacheToolOutputSchemas + callTool). Mirror that exact path
+  // here so these tests fail without the fix.
   describe('structured content vs advertised outputSchema', () => {
-    it('set_breakpoint structuredContent validates against its outputSchema', async () => {
-      const server = makeServer({ version: '0.0.1' });
-      const tool = (server as any)._registeredTools['set_breakpoint'];
-      expect(tool?.outputSchema).toBeDefined();
+    // Mirrors the SDK client: compile the advertised (JSON) schema with Ajv.
+    function compileClientValidator(tool: any): (value: unknown) => boolean {
+      const schemaJson = zodToJsonSchema(tool.outputSchema, { strictUnions: true });
+      const validate = new Ajv().compile(schemaJson);
+      return (value: unknown) => validate(value) as boolean;
+    }
 
-      const result = await tool.callback(
-        { file: '/path/to/file.php', breakpoints: [{ line: 10 }] },
-        undefined
-      );
-      expect(result.structuredContent).toBeDefined();
-      expect(tool.outputSchema.safeParse(result.structuredContent).success).toBe(true);
-    });
+    const toolsWithOutputSchema = ['set_breakpoint', 'set_logpoint'] as const;
 
-    it('set_logpoint structuredContent validates against its outputSchema', async () => {
-      const server = makeServer({ version: '0.0.1' });
-      const tool = (server as any)._registeredTools['set_logpoint'];
-      expect(tool?.outputSchema).toBeDefined();
+    for (const toolName of toolsWithOutputSchema) {
+      const args =
+        toolName === 'set_breakpoint'
+          ? { file: '/path/to/file.php', breakpoints: [{ line: 10 }] }
+          : { file: '/path/to/file.php', logpoints: [{ line: 10, logMessage: 'hit' }] };
 
-      const result = await tool.callback(
-        { file: '/path/to/file.php', logpoints: [{ line: 10, logMessage: 'hit' }] },
-        undefined
-      );
-      expect(result.structuredContent).toBeDefined();
-      expect(tool.outputSchema.safeParse(result.structuredContent).success).toBe(true);
-    });
+      it(`${toolName} structuredContent validates against its outputSchema (zod, server-side)`, async () => {
+        const server = makeServer({ version: '0.0.1' });
+        const tool = (server as any)._registeredTools[toolName];
+        expect(tool?.outputSchema).toBeDefined();
+
+        const result = await tool.callback(args, undefined);
+        expect(result.structuredContent).toBeDefined();
+        expect(tool.outputSchema.safeParse(result.structuredContent).success).toBe(true);
+      });
+
+      it(`${toolName} structuredContent passes the SDK client's Ajv validation of the advertised schema`, async () => {
+        const server = makeServer({ version: '0.0.1' });
+        const tool = (server as any)._registeredTools[toolName];
+
+        const result = await tool.callback(args, undefined);
+        expect(compileClientValidator(tool)(result.structuredContent)).toBe(true);
+      });
+
+      it(`${toolName} outputSchema accepts the errorResult() shape ({ success: false, error })`, async () => {
+        const server = makeServer({ version: '0.0.1' });
+        const tool = (server as any)._registeredTools[toolName];
+
+        const errorContent = { success: false, error: 'boom: session not found' };
+        expect(tool.outputSchema.safeParse(errorContent).success).toBe(true);
+        expect(compileClientValidator(tool)(errorContent)).toBe(true);
+      });
+    }
   });
 
   describe('clear_breakpoints tool', () => {

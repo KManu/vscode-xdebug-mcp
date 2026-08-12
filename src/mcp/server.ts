@@ -500,13 +500,17 @@ export function makeServer(options: { version?: string } = {}): McpServer {
         )
       },
       outputSchema: {
-        success: z.literal(true),
+        // success is a boolean: structuredResult() always sets it to true, but
+        // errorResult() (wrapped by safeHandler) returns { success: false, error },
+        // and the SDK validates error results too (no isError flag is set).
+        success: z.boolean(),
         results: z.array(
           z.object({
             verified: z.boolean(),
             message: z.string().optional()
           })
-        )
+        ).optional(),
+        error: z.string().optional()
       }
     },
     safeHandler(async ({ sessionId, file, breakpoints }): Promise<CallToolResult & { structuredContent: unknown }> => {
@@ -539,13 +543,17 @@ export function makeServer(options: { version?: string } = {}): McpServer {
         )
       },
       outputSchema: {
-        success: z.literal(true),
+        // success is a boolean: structuredResult() always sets it to true, but
+        // errorResult() (wrapped by safeHandler) returns { success: false, error },
+        // and the SDK validates error results too (no isError flag is set).
+        success: z.boolean(),
         results: z.array(
           z.object({
             verified: z.boolean(),
             message: z.string().optional()
           })
-        )
+        ).optional(),
+        error: z.string().optional()
       }
     },
     safeHandler(async ({ sessionId, file, logpoints }): Promise<CallToolResult & { structuredContent: unknown }> => {
