@@ -704,18 +704,26 @@ export function makeServer(options: { version?: string } = {}): McpServer {
 
 export const outputSchemas = {
   setBreakpoint: z.object({
-    success: z.literal(true),
+    // Mirrors the advertised outputSchema in registerTool: success is a boolean
+    // (structuredResult sets true, errorResult sets false) and results/error are
+    // optional so error results ({ success: false, error }) validate too.
+    success: z.boolean(),
     results: z.array(z.object({
       verified: z.boolean(),
       message: z.string().optional(),
-    })),
+    })).optional(),
+    error: z.string().optional(),
   }),
   setLogpoint: z.object({
-    success: z.literal(true),
+    // Mirrors the advertised outputSchema in registerTool: success is a boolean
+    // (structuredResult sets true, errorResult sets false) and results/error are
+    // optional so error results ({ success: false, error }) validate too.
+    success: z.boolean(),
     results: z.array(z.object({
       verified: z.boolean(),
       message: z.string().optional(),
-    })),
+    })).optional(),
+    error: z.string().optional(),
   }),
   status: z.object({
     success: z.literal(true),
