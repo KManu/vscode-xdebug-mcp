@@ -19,9 +19,35 @@ const fs = require('node:fs');
 
 // ---------------------------------------------------------------------------
 // 1. Build the server bundle (httpTransport.ts → CJS, vscode externalized)
+//    into a per-invocation private dir (fixed /tmp names are a tamper/race
+//    hazard and linger; this dir is removed on exit).
 // ---------------------------------------------------------------------------
 const esbuild = require('esbuild');
-const bundlePath = path.join(os.tmpdir(), 'xdebug-mcp-standalone-bundle.cjs');
+const bundleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xdebug-mcp-demo-'));
+const bundlePath = path.join(bundleDir, 'standalone-bundle.cjs');
+const cleanup = () => fs.rmSync(bundleDir, { recursive: true, force: true });
+process.on('exit', cleanup);
+process.on('SIGINT', () => { cleanup(); process.exit(130); });
+
+// Refuse to clobber a live extension instance's discovery file: startHttpServer
+// unconditionally rewrites ~/.vscode-xdebug-mcp/port.json and stopHttpServer
+// deletes it, so running the demo while a real instance owns it would silently
+// redirect and then destroy the extension's discovery entry.
+const portFile = path.join(os.homedir(), '.vscode-xdebug-mcp', 'port.json');
+if (fs.existsSync(portFile)) {
+  let owner = null;
+  try { owner = JSON.parse(fs.readFileSync(portFile, 'utf8')); } catch { /* stale/garbage file — proceed */ }
+  const pidAlive = (pid) => {
+    try { process.kill(pid, 0); return true; }
+    catch (err) { return err.code !== 'ESRCH'; } // EPERM = exists but not ours; ESRCH = gone
+  };
+  if (owner && typeof owner.pid === 'number' && owner.pid !== process.pid && pidAlive(owner.pid)) {
+    console.error(`\nRefusing to run: ${portFile} is owned by live pid ${owner.pid} (a running extension instance?).`);
+    console.error('Close the extension host (or delete the file) before running the demo.');
+    cleanup();
+    process.exit(1);
+  }
+}
 
 esbuild.buildSync({
   entryPoints: [path.join(__dirname, 'demo-entry.ts')],
@@ -190,7 +216,6 @@ async function main() {
   ok('server uri', uri);
 
   // Show the port file that external clients use for discovery
-  const portFile = path.join(os.homedir(), '.vscode-xdebug-mcp', 'port.json');
   const portInfo = JSON.parse(fs.readFileSync(portFile, 'utf8'));
   ok('port file', `${portInfo.uri} (pid ${portInfo.pid}, started ${portInfo.started})`);
 
@@ -258,8 +283,8 @@ main()
     }
     console.log('\nAll steps completed successfully. Server stopped, port file cleaned up.');
   })
-  .catch((err) => {
+  .catch(async (err) => {
     console.error('\nDemo FAILED:', err);
-    stopHttpServer().catch(() => {});
+    await stopHttpServer().catch(() => {});
     process.exitCode = 1;
   });

@@ -459,6 +459,21 @@ describe('server tool schema validation', () => {
         expect(tool.outputSchema.safeParse(errorContent).success).toBe(true);
         expect(compileClientValidator(tool)(errorContent)).toBe(true);
       });
+
+      it(`${toolName} error result through the REAL safeHandler path validates (rejecting DAP call)`, async () => {
+        const server = makeServer({ version: '0.0.1' });
+        const tool = (server as any)._registeredTools[toolName];
+
+        // Drive the actual callback with a rejecting DAP call so safeHandler's
+        // errorResult() emits the real error shape (not a hand-constructed one).
+        const dapFn = toolName === 'set_breakpoint' ? dapBridge.setFileBreakpoints : dapBridge.setFileBreakpoints;
+        (dapFn as any).mockRejectedValueOnce(new Error('boom: session not found'));
+
+        const result = await tool.callback(args, undefined);
+        expect(result.structuredContent).toEqual({ success: false, error: 'boom: session not found' });
+        expect(tool.outputSchema.safeParse(result.structuredContent).success).toBe(true);
+        expect(compileClientValidator(tool)(result.structuredContent)).toBe(true);
+      });
     }
   });
 
@@ -1646,13 +1661,24 @@ describe('server tool outputSchema verification', () => {
       expect(parsed.success).toBe(true);
     });
 
-    it('should reject output without results array', () => {
+    it('should reject output without the success flag', () => {
       const server = makeServer({ version: '0.0.1' });
       const tool = getRegisteredTool(server, 'set_breakpoint');
 
       const schema = tool.outputSchema;
-      const parsed = schema.safeParse({ something: 'else' });
-      expect(parsed.success).toBe(false);
+      // success is required (structuredResult/errorResult always inject it);
+      // results is intentionally OPTIONAL (error results omit it).
+      expect(schema.safeParse({ something: 'else' }).success).toBe(false);
+      expect(schema.safeParse({ results: [{ verified: true }] }).success).toBe(false);
+    });
+
+    it('should accept success-only and error shapes (no results array)', () => {
+      const server = makeServer({ version: '0.0.1' });
+      const tool = getRegisteredTool(server, 'set_breakpoint');
+
+      const schema = tool.outputSchema;
+      expect(schema.safeParse({ success: true }).success).toBe(true);
+      expect(schema.safeParse({ success: false, error: 'boom' }).success).toBe(true);
     });
 
     it('should reject output with invalid results item (missing verified)', () => {
@@ -1660,7 +1686,7 @@ describe('server tool outputSchema verification', () => {
       const tool = getRegisteredTool(server, 'set_breakpoint');
 
       const schema = tool.outputSchema;
-      const parsed = schema.safeParse({ results: [{ message: 'no verified field' }] });
+      const parsed = schema.safeParse({ success: true, results: [{ message: 'no verified field' }] });
       expect(parsed.success).toBe(false);
     });
   });
@@ -1679,13 +1705,24 @@ describe('server tool outputSchema verification', () => {
       expect(parsed.success).toBe(true);
     });
 
-    it('should reject output without results array', () => {
+    it('should reject output without the success flag', () => {
       const server = makeServer({ version: '0.0.1' });
       const tool = getRegisteredTool(server, 'set_logpoint');
 
       const schema = tool.outputSchema;
-      const parsed = schema.safeParse({ results: 'not-an-array' });
-      expect(parsed.success).toBe(false);
+      // success is required (structuredResult/errorResult always inject it);
+      // results is intentionally OPTIONAL (error results omit it).
+      expect(schema.safeParse({ something: 'else' }).success).toBe(false);
+      expect(schema.safeParse({ results: [{ verified: true }] }).success).toBe(false);
+    });
+
+    it('should accept success-only and error shapes (no results array)', () => {
+      const server = makeServer({ version: '0.0.1' });
+      const tool = getRegisteredTool(server, 'set_logpoint');
+
+      const schema = tool.outputSchema;
+      expect(schema.safeParse({ success: true }).success).toBe(true);
+      expect(schema.safeParse({ success: false, error: 'boom' }).success).toBe(true);
     });
   });
 
