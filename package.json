@@ -32,7 +32,8 @@
     "verify:mock-dap": "node scripts/verify-mock-dap.js",
     "test:integration": "npm run compile:integration && npm run compile && npm run verify:mock-dap && vscode-test",
     "test:all": "npm run compile && npm run compile:integration && npm run verify:mock-dap && npm run test && vscode-test",
-    "test:e2e": "DONT_PROMPT_WSL_INSTALL=1 npm run compile:integration && npm run compile && docker compose -f src/test/fixtures/php-e2e/docker-compose.yml up -d --build && vscode-test; docker compose -f src/test/fixtures/php-e2e/docker-compose.yml down 2>/dev/null; true"
+    "test:e2e": "DONT_PROMPT_WSL_INSTALL=1 npm run compile:integration && npm run compile && docker compose -f src/test/fixtures/php-e2e/docker-compose.yml up -d --build && vscode-test; docker compose -f src/test/fixtures/php-e2e/docker-compose.yml down 2>/dev/null; true",
+    "demo": "node scripts/standalone-demo.js"
   },
   "keywords": [
     "xdebug",

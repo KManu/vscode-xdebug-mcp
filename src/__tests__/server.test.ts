@@ -466,8 +466,7 @@ describe('server tool schema validation', () => {
 
         // Drive the actual callback with a rejecting DAP call so safeHandler's
         // errorResult() emits the real error shape (not a hand-constructed one).
-        const dapFn = toolName === 'set_breakpoint' ? dapBridge.setFileBreakpoints : dapBridge.setFileBreakpoints;
-        (dapFn as any).mockRejectedValueOnce(new Error('boom: session not found'));
+        (dapBridge.setFileBreakpoints as any).mockRejectedValueOnce(new Error('boom: session not found'));
 
         const result = await tool.callback(args, undefined);
         expect(result.structuredContent).toEqual({ success: false, error: 'boom: session not found' });

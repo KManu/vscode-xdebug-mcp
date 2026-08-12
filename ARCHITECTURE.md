@@ -57,6 +57,8 @@ server.registerTool(
 - `okResult()` — for commands with no return data (continue, pause, step_*)
 - `structuredResult(data)` — merges `success: true` with tool-specific data
 
+**Error results**: `safeHandler` wraps every tool callback; when the underlying call throws, it returns `errorResult(error)` — `{ success: false, error: message }` in `structuredContent`, **without** setting the MCP `isError` flag (the call is reported successful at the protocol level). Tools that advertise an `outputSchema` (`set_breakpoint`, `set_logpoint`) must therefore declare `success: z.boolean()` with optional `results`/`error` so both shapes validate on the server (zod) and on SDK clients (Ajv against the advertised JSON schema, which is serialized with `additionalProperties: false`). Clients must check `structuredContent.success`, not `isError` or the presence of `results`, to detect failure. The exported `outputSchemas` in `server.ts` mirror the advertised schemas and are used by the integration suite.
+
 ### 2. DAP Bridge Pattern (dapBridge.ts)
 
 All debug adapter communication goes through `session.customRequest(command, args)`:
