@@ -1,4 +1,14 @@
 import { vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+
+/**
+ * Redirect port file writes to a per-process temp dir BEFORE any test module
+ * imports src/utils/portFile. Test files run in parallel forks, and the real
+ * ~/.vscode-xdebug-mcp/port.json would race (EPERM on Windows atomic rename).
+ */
+process.env.XDEBUG_MCP_PORT_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'xdebug-mcp-port-'));
 
 /**
  * Shared vitest setup file — runs before any test file.
