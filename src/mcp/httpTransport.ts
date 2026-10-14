@@ -18,6 +18,40 @@ let runningServer: HttpServer | undefined;
 let serverUriPromise: Promise<string> | undefined;
 let lastKnownUri: string | undefined;
 
+// Extract the JSON-RPC request id for the 408 timeout response: string ids are
+// valid JSON-RPC (they are typically not used by MCP clients, but the server
+// must echo whatever the client sent), and notifications carry no id.
+export function extractJsonRpcId(body: unknown): number | string | null {
+  if (body && typeof body === 'object' && 'id' in body) {
+    const id = (body as Record<string, unknown>).id;
+    if (typeof id === 'number' || typeof id === 'string') {
+      return id;
+    }
+  }
+  return null;
+}
+
+// Build the 408 JSON-RPC error response. Echoing the original request id keeps
+// the response well-formed (previously id: null even when the client sent one).
+export function handleRequestTimeout(
+  req: IncomingMessage,
+  res: ServerResponse,
+  parsedBody: unknown
+): void {
+  if (!res.headersSent) {
+    res.statusCode = 408;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        error: { code: -32000, message: 'Request timeout' },
+        id: extractJsonRpcId(parsedBody),
+      })
+    );
+  }
+  req.destroy();
+}
+
 export async function startHttpServer(options: { version?: string } = {}): Promise<string> {
   // Prevent multiple simultaneous server starts on extension reloads.
   if (serverUriPromise) {
@@ -25,21 +59,12 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
   }
 
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    // Parsed body, in scope for the timeout handler below (declared before it
+    // is registered so the 408 can echo the original request id).
+    let parsedBody: unknown | undefined;
+
     // Enforce a request timeout so slow clients cannot block the event loop.
-    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
-      if (!res.headersSent) {
-        res.statusCode = 408;
-        res.setHeader('Content-Type', 'application/json');
-        res.end(
-          JSON.stringify({
-            jsonrpc: '2.0',
-            error: { code: -32000, message: 'Request timeout' },
-            id: null,
-          })
-        );
-      }
-      req.destroy();
-    });
+    req.setTimeout(REQUEST_TIMEOUT_MS, () => handleRequestTimeout(req, res, parsedBody));
 
     // Health check endpoint for monitoring and diagnostics.
     const url = new URL(req.url ?? '/', `http://${HOST}:${DEFAULT_PORT}`);
@@ -138,7 +163,6 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
     // Clean up when the client disconnects (important for streaming responses).
     res.on('close', handleClose);
 
-    let parsedBody: unknown | undefined;
     if (req.method === 'POST') {
       try {
         parsedBody = await readJsonBody();

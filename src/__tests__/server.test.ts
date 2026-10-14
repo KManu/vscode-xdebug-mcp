@@ -20,7 +20,13 @@ vi.mock('../debug/dapBridge', () => ({
   pause: vi.fn().mockResolvedValue(undefined),
   next: vi.fn().mockResolvedValue(undefined),
   stepIn: vi.fn().mockResolvedValue(undefined),
-  stepOut: vi.fn().mockResolvedValue(undefined),
+  stepOut: vi.fn().mockResolvedValue({
+    exited: true,
+    iterations: 1,
+    frame: { id: 1, name: 'add', line: 3, source: { path: '/app/lib.php' } },
+    depthBefore: 2,
+    depthAfter: 1,
+  }),
   restart: vi.fn().mockResolvedValue(undefined),
   terminate: vi.fn().mockResolvedValue(undefined),
   disconnect: vi.fn().mockResolvedValue(undefined),
@@ -1200,14 +1206,46 @@ describe('server tool structuredContent verification', () => {
   });
 
   describe('step_out tool', () => {
-    it('should return structuredContent with success:true', async () => {
-      (dapBridge.stepOut as any).mockResolvedValue(undefined);
+    it('should return structuredContent with success:true and step-out fields', async () => {
+      (dapBridge.stepOut as any).mockResolvedValue({
+        exited: true,
+        iterations: 1,
+        frame: { id: 1, name: 'add', line: 3, source: { path: '/app/lib.php' } },
+        depthBefore: 2,
+        depthAfter: 1,
+      });
 
       const server = makeServer({ version: '0.0.1' });
       const result = await callTool(server, 'step_out', {});
 
       expect(result.structuredContent).toBeDefined();
       expect(result.structuredContent.success).toBe(true);
+      expect(result.structuredContent.exited).toBe(true);
+      expect(result.structuredContent.iterations).toBe(1);
+      expect(result.structuredContent.depthBefore).toBe(2);
+      expect(result.structuredContent.depthAfter).toBe(1);
+      expect(result.structuredContent.frame.name).toBe('add');
+    });
+
+    it('should return success:true with message when step_out did not exit', async () => {
+      (dapBridge.stepOut as any).mockResolvedValue({
+        exited: false,
+        iterations: 3,
+        frame: { id: 1, name: 'add', line: 3, source: { path: '/app/lib.php' } },
+        depthBefore: 2,
+        depthAfter: 2,
+        message: 'step_out did not leave the function after 3 attempts; the debugger may be stopped at a breakpoint inside the function.',
+      });
+
+      const server = makeServer({ version: '0.0.1' });
+      const result = await callTool(server, 'step_out', {});
+
+      expect(result.structuredContent).toBeDefined();
+      expect(result.structuredContent.success).toBe(true);
+      expect(result.structuredContent.exited).toBe(false);
+      expect(result.structuredContent.iterations).toBe(3);
+      expect(result.structuredContent.depthAfter).toBe(2);
+      expect(result.structuredContent.message).toContain('did not leave the function');
     });
   });
 

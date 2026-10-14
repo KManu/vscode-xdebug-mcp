@@ -59,6 +59,31 @@ export interface DebugStatus {
   threads?: ThreadInfo[];
 }
 
+export interface StepOutResult {
+  exited: boolean;
+  iterations: number;
+  frame?: StackFrame; // top frame after the final stop (undefined if session ended)
+  depthBefore: number;
+  depthAfter?: number; // undefined if session ended mid-step
+  message?: string; // set when exited === false, when the session ended mid-step,
+  // or when the top-level single-shot path returned without waiting
+}
+
+// stepOut auto-repeat tuning. Real Xdebug stops first at the function's return
+// line on step_out (an intermediate stop); the loop re-steps until the stack
+// depth decreases, bounded by STEP_OUT_MAX_ITERATIONS.
+const STEP_OUT_MAX_ITERATIONS = 3; // quirk needs 2; 3 gives margin
+const STEP_OUT_STOP_TIMEOUT_MS = 10000; // per-iteration wait for the stop
+const STEP_OUT_POLL_MS = 150; // poll interval while waiting for the stop
+const DEPTH_PROBE_LEVELS = 256; // stackTrace depth for exit detection
+// ONE overall deadline for the whole step_out loop. The MCP request arrives
+// over HTTP with httpTransport REQUEST_TIMEOUT_MS = 30000; after that the
+// transport answers 408 and destroys the socket, so the loop must stop issuing
+// step commands well before it. The real xdebug.php-debug adapter queues
+// stackTrace until the next stop and never throws notStopped, so this deadline
+// — not the per-iteration timeout — is what actually bounds the loop.
+const STEP_OUT_OVERALL_TIMEOUT_MS = 25000;
+
 // Cache sessions because @types/vscode does not expose a session list in all versions.
 const sessionRegistry = new Map<string, vscode.DebugSession>();
 // Track MCP-managed breakpoints so we only remove what we added.
@@ -380,14 +405,16 @@ export async function threads(sessionId?: string): Promise<ThreadInfo[]> {
   return Array.isArray(response?.threads) ? response.threads : [];
 }
 
-// Stack trace request with optional pagination.
-export async function stack(
-  options: { sessionId?: string; threadId?: number; startFrame?: number; levels?: number } = {}
+// Stack trace for a specific, already-resolved session (internal helper so
+// stepOut can reuse the session it already resolved without a second getSession).
+async function stackForSession(
+  session: vscode.DebugSession,
+  options: { threadId?: number; startFrame?: number; levels?: number } = {}
 ): Promise<StackFrame[]> {
-  const session = getSession(options.sessionId);
   try {
-    // Resolve threadId: default 1 works for mock, real Xdebug needs actual ID.
-    let threadId = options.threadId ?? 0;
+    // Resolve threadId: DAP thread ids start at 1, so fall back to 1 when the
+    // adapter cannot be asked (matches resolveThreadId's fallback).
+    let threadId = options.threadId ?? 1;
     if (!options.threadId) {
       try {
         const threadsResp = (await session.customRequest('threads')) as
@@ -398,7 +425,7 @@ export async function stack(
           threadId = threads[0].id;
         }
       } catch {
-        threadId = 0;
+        threadId = 1;
       }
     }
     const raw = await session.customRequest('stackTrace', {
@@ -421,6 +448,18 @@ export async function stack(
     }
     throw error;
   }
+}
+
+// Stack trace request with optional pagination.
+export async function stack(
+  options: { sessionId?: string; threadId?: number; startFrame?: number; levels?: number } = {}
+): Promise<StackFrame[]> {
+  const session = getSession(options.sessionId);
+  return stackForSession(session, {
+    threadId: options.threadId,
+    startFrame: options.startFrame,
+    levels: options.levels,
+  });
 }
 
 // Scope list for a single frame.
@@ -618,6 +657,118 @@ export async function clearFileBreakpoints(options: { sessionId?: string; file: 
   return setFileBreakpoints({ sessionId: options.sessionId, file: options.file, breakpoints: [] });
 }
 
+// Resolve the threadId for execution control commands: an explicit id wins,
+// then the first thread reported by the adapter, falling back to 1.
+async function resolveThreadId(session: vscode.DebugSession, requested?: number): Promise<number> {
+  if (requested) {
+    return requested;
+  }
+  try {
+    const response = (await session.customRequest('threads')) as {
+      threads?: { id: number }[];
+      body?: { threads?: { id: number }[] };
+    };
+    const threads = response.threads ?? response.body?.threads ?? [];
+    if (threads.length > 0) {
+      return threads[0].id;
+    }
+  } catch {
+    // Adapter may not support the threads request; fall through to the default.
+  }
+  return 1;
+}
+
+/** Rejection marker for the raced per-probe timer. Distinct from DAP notStopped errors. */
+class StepWaitTimeoutError extends Error {
+  constructor(ms: number) {
+    super(`step_out wait probe exceeded ${ms}ms`);
+    this.name = 'StepWaitTimeoutError';
+  }
+}
+
+/**
+ * Races a stackTrace probe against a timer. The real xdebug.php-debug adapter
+ * queues the probe until the next stop and NEVER throws notStopped, so the
+ * timer is the only thing that bounds the wait against it. If the timer wins,
+ * the late-resolving DAP response is simply dropped (Promise.race has already
+ * settled) — no further step commands may be issued afterwards.
+ */
+async function raceStackTraceProbe(
+  session: vscode.DebugSession,
+  threadId: number,
+  remainingMs: number
+): Promise<unknown> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      session.customRequest('stackTrace', {
+        threadId,
+        startFrame: 0,
+        levels: DEPTH_PROBE_LEVELS,
+      }),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new StepWaitTimeoutError(remainingMs)), remainingMs);
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+/**
+ * Polls stackTrace until the session stops after a step command.
+ * Mirrors the wait_for_stop poll loop (server.ts) but calls stackTrace
+ * directly so it can observe depth and classify errors:
+ *   frames present              -> return frames
+ *   raced timer / deadline hit  -> throw
+ *                                  'Timed out waiting for step_out to complete after Nms.'
+ *   isNotStoppedError(error)    -> keep polling until the deadline, then throw as above
+ *   any OTHER error, and the session left the registry -> 'ended'
+ *   any OTHER error while the session is still registered -> rethrow (must surface)
+ */
+async function waitForStepStop(
+  session: vscode.DebugSession,
+  threadId: number,
+  timeoutMs: number,
+  pollMs: number
+): Promise<StackFrame[] | 'ended'> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      throw new Error(`Timed out waiting for step_out to complete after ${timeoutMs}ms.`);
+    }
+    try {
+      const raw = await raceStackTraceProbe(session, threadId, remainingMs);
+      const response = raw as { stackFrames?: StackFrame[]; body?: { stackFrames?: StackFrame[] } };
+      const frames = response.stackFrames ?? response.body?.stackFrames;
+      return Array.isArray(frames) ? frames : [];
+    } catch (error) {
+      if (error instanceof StepWaitTimeoutError) {
+        throw new Error(`Timed out waiting for step_out to complete after ${timeoutMs}ms.`);
+      }
+      if (isNotStoppedError(error)) {
+        await new Promise((resolve) => setTimeout(resolve, pollMs));
+        continue;
+      }
+      // Only classify as 'ended' when the session actually left the registry
+      // (terminated/disconnected). A transient protocol error while the session
+      // is still alive must surface instead of masquerading as a clean end.
+      if (!sessionRegistry.has(session.id)) {
+        log.warn(
+          `[dapBridge] Session likely ended while waiting for step_out: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+        return 'ended';
+      }
+      throw error;
+    }
+  }
+}
+
 // Execution control helpers.
 export async function cont(options: { sessionId?: string; threadId?: number } = {}): Promise<void> {
   const session = getSession(options.sessionId);
@@ -634,9 +785,159 @@ export async function stepIn(options: { sessionId?: string; threadId?: number } 
   await session.customRequest('stepIn', { threadId: options.threadId ?? 1 });
 }
 
-export async function stepOut(options: { sessionId?: string; threadId?: number } = {}): Promise<void> {
+export async function stepOut(
+  options: {
+    sessionId?: string;
+    threadId?: number;
+    maxIterations?: number;
+    stopTimeoutMs?: number;
+    overallTimeoutMs?: number; // testability knob, NOT exposed in the MCP schema
+  } = {}
+): Promise<StepOutResult> {
   const session = getSession(options.sessionId);
-  await session.customRequest('stepOut', { threadId: options.threadId ?? 1 });
+  const threadId = await resolveThreadId(session, options.threadId);
+  const maxIterations = options.maxIterations ?? STEP_OUT_MAX_ITERATIONS; // testability knobs,
+  const stopTimeoutMs = options.stopTimeoutMs ?? STEP_OUT_STOP_TIMEOUT_MS; // NOT exposed in the MCP schema
+  // ONE overall deadline for the whole operation, derived from the HTTP budget:
+  // httpTransport REQUEST_TIMEOUT_MS is 30000, so with STEP_OUT_OVERALL_TIMEOUT_MS
+  // = 25000 the loop always finishes (or gives up) before the transport 408s.
+  const overallTimeoutMs = options.overallTimeoutMs ?? STEP_OUT_OVERALL_TIMEOUT_MS;
+  const overallDeadline = Date.now() + overallTimeoutMs;
+
+  // Pass the already-resolved session down; no second getSession lookup.
+  // The baseline probe is raced against the overall deadline: the real
+  // xdebug.php-debug adapter queues stackTrace until the next stop (and never
+  // throws notStopped), so the timer is the only bound on the handler's
+  // lifetime when the debuggee is RUNNING (round-2 F1).
+  let before: StackFrame[];
+  let baselineTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    before = await Promise.race([
+      stackForSession(session, { threadId, startFrame: 0, levels: DEPTH_PROBE_LEVELS }),
+      new Promise<never>((_, reject) => {
+        baselineTimer = setTimeout(
+          () => reject(new Error(`step_out baseline probe exceeded ${overallTimeoutMs}ms`)),
+          overallTimeoutMs
+        );
+      }),
+    ]);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('step_out baseline probe exceeded')) {
+      return {
+        exited: false,
+        iterations: 0,
+        frame: undefined,
+        depthBefore: 0,
+        depthAfter: 0,
+        message:
+          `step_out exceeded its overall deadline of ${overallTimeoutMs}ms before the stack ` +
+          'could be probed; no further step commands were issued.',
+      };
+    }
+    throw error;
+  } finally {
+    if (baselineTimer) {
+      clearTimeout(baselineTimer);
+    }
+  }
+  const depthBefore = before.length;
+  const topName = before[0]?.name;
+
+  // Top-level frame (depth <= 1): there is no caller to land on, so a full
+  // depth loop would never see a depth decrease. DBGp step_out at top level
+  // behaves like `run`, so we issue ONE step and return immediately WITHOUT
+  // waiting for the exit — the session may still stop at a later breakpoint.
+  if (depthBefore <= 1) {
+    // Round-2 F1: gate before stepping. Timer drift can let the baseline
+    // resolve slightly past the overall deadline (the race timer fired late),
+    // and the HTTP client may already have been 408'd — never issue an
+    // orphaned stepOut once the budget is gone.
+    if (Date.now() >= overallDeadline) {
+      return {
+        exited: false,
+        iterations: 0,
+        frame: before[0],
+        depthBefore,
+        depthAfter: depthBefore,
+        message:
+          `step_out exceeded its overall deadline of ${overallTimeoutMs}ms before the function ` +
+          'was exited; no further step commands were issued.',
+      };
+    }
+    await session.customRequest('stepOut', { threadId });
+    return {
+      exited: true,
+      iterations: 1,
+      frame: before[0],
+      depthBefore,
+      message:
+        'step_out returned immediately without waiting for exit (session was at top level); ' +
+        'the session may still stop at a later breakpoint.',
+    };
+  }
+
+  let lastFrames: StackFrame[] | 'ended' = before;
+  for (let i = 1; i <= maxIterations; i++) {
+    // Overall-deadline gate: never issue another stepOut once the HTTP budget
+    // is exhausted; late-resolving DAP responses are dropped by the raced probes.
+    if (Date.now() >= overallDeadline) {
+      return {
+        exited: false,
+        iterations: i - 1,
+        frame: Array.isArray(lastFrames) ? lastFrames[0] : undefined,
+        depthBefore,
+        depthAfter: Array.isArray(lastFrames) ? lastFrames.length : undefined,
+        message:
+          `step_out exceeded its overall deadline of ${overallTimeoutMs}ms before the function ` +
+          'was exited; no further step commands were issued.',
+      };
+    }
+    // Clamp the per-iteration wait so its raced timer fires before the HTTP 408.
+    const iterationTimeoutMs = Math.min(stopTimeoutMs, overallDeadline - Date.now());
+    // Adapter responds to stepOut immediately (phpDebug.js:1156); the stopped
+    // event arrives later, so polling afterwards is correct.
+    await session.customRequest('stepOut', { threadId });
+    lastFrames = await waitForStepStop(session, threadId, iterationTimeoutMs, STEP_OUT_POLL_MS);
+
+    if (lastFrames === 'ended') {
+      return { exited: true, iterations: i, depthBefore, message: 'Debug session ended during step_out.' };
+    }
+    const depthAfter = lastFrames.length;
+    const frameAfter = lastFrames[0];
+    // Depth INCREASE: the step landed in a nested callee (a breakpoint inside a
+    // function called mid-step). Re-stepping would exit the NESTED function,
+    // not the original one — stop and report instead.
+    if (depthAfter > depthBefore) {
+      return {
+        exited: false,
+        iterations: i,
+        frame: frameAfter,
+        depthBefore,
+        depthAfter,
+        message: `stopped at a breakpoint inside a nested function${
+          frameAfter?.name ? ` (${frameAfter.name})` : ''
+        }; the original function was not exited.`,
+      };
+    }
+    const exited =
+      depthAfter < depthBefore || // primary: frame exited
+      (depthAfter === depthBefore && !!frameAfter && frameAfter.name !== topName); // secondary: adapter quirk
+    if (exited) {
+      return { exited: true, iterations: i, frame: frameAfter, depthBefore, depthAfter };
+    }
+    // Xdebug intermediate stop: still at the function's return line (same depth). Loop.
+  }
+
+  return {
+    exited: false,
+    iterations: maxIterations,
+    frame: Array.isArray(lastFrames) ? lastFrames[0] : undefined,
+    depthBefore,
+    depthAfter: Array.isArray(lastFrames) ? lastFrames.length : undefined,
+    message:
+      `step_out did not leave the function after ${maxIterations} attempts; ` +
+      'the debugger may be stopped at a breakpoint inside the function.',
+  };
 }
 
 export async function pause(options: { sessionId?: string; threadId?: number } = {}): Promise<void> {

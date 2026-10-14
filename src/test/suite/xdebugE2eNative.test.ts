@@ -3,7 +3,8 @@
 // The xdebug.php-debug adapter drives the PHP lifecycle itself in `launch`
 // mode (runtimeExecutable + program), so there is no external child_process
 // trigger and no spawn/listener race. Each test:
-//   1. startDebugging (adapter spawns PHP; stopOnEntry halts it on line 1)
+//   1. startDebugging (adapter spawns PHP; stopOnEntry halts it on line 7
+//      of the fixture — the require_once of lib.php)
 //   2. pollUntilStopped  (session stopped at entry)
 //   3. MCP set_breakpoint (the tool under test) at the target line
 //   4. MCP continue        (PHP resumes, hits the breakpoint)
@@ -31,7 +32,7 @@ function mcpRequest(port: number, method: string, params?: any, id: number = 1):
     const body = JSON.stringify({ jsonrpc: '2.0', id, method, params });
     const req = http.request(
       {
-        hostname: 'localhost',
+        hostname: '127.0.0.1',
         port,
         path: '/mcp',
         method: 'POST',
@@ -71,13 +72,34 @@ async function initializeMcp(port: number): Promise<void> {
   await mcpRequest(port, 'notifications/initialized', {}, 2);
 }
 
-async function pollUntilStopped(port: number, timeoutMs = 60000, intervalMs = 200): Promise<void> {
+async function pollUntilStopped(
+  port: number,
+  timeoutMs = 60000,
+  intervalMs = 200,
+  expectedLine?: number,
+  expectedFileSubstr?: string
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
       const resp = await toolCall(port, 'status');
       const sc = resp.result?.structuredContent || resp.result || {};
-      if (sc.status?.stopped === true) return;
+      if (sc.status?.stopped === true) {
+        // Guard against the stale-stop race (status still reports the PREVIOUS
+        // stop right after continue/step_in): when an expected landing position
+        // is given, confirm the top stack frame actually matches it.
+        if (expectedLine === undefined && !expectedFileSubstr) {
+          return;
+        }
+        const stackResp = await toolCall(port, 'stack');
+        const stackSc = stackResp.result?.structuredContent || stackResp.result || {};
+        const top = (stackSc.frames || [])[0];
+        const lineOk = expectedLine === undefined || top?.line === expectedLine;
+        const fileOk = !expectedFileSubstr || (top?.source?.path || '').includes(expectedFileSubstr);
+        if (top && lineOk && fileOk) {
+          return;
+        }
+      }
     } catch {
       /* server may not be ready yet */
     }
@@ -161,6 +183,16 @@ async function stopDebugSession(timeout = 5000): Promise<void> {
   }
 }
 
+// Breakpoints set via MCP persist in VS Code's global breakpoint model across
+// sessions. Clear both file (fixture) and function breakpoints before every
+// test and after the suite so no test depends on another test's cleanup
+// (previously Test 7 cleared file breakpoints inline). Works without an active
+// debug session: the dapBridge breakpoint maps are module-level.
+async function clearAllMcpBreakpoints(port: number): Promise<void> {
+  await toolCall(port, 'set_breakpoint', { file: FIXTURE_SCRIPT, breakpoints: [] });
+  await toolCall(port, 'set_function_breakpoints', { breakpoints: [] });
+}
+
 // ── Test suite ──────────────────────────────────────────────────────
 
 describe('Xdebug E2E Native', function () {
@@ -172,6 +204,16 @@ describe('Xdebug E2E Native', function () {
     this.timeout(15000);
     port = (await getServerPort()).port;
     await initializeMcp(port);
+  });
+
+  beforeEach(async function () {
+    this.timeout(15000);
+    await clearAllMcpBreakpoints(port);
+  });
+
+  after(async function () {
+    this.timeout(15000);
+    await clearAllMcpBreakpoints(port);
   });
 
   afterEach(async function () {
@@ -190,7 +232,7 @@ describe('Xdebug E2E Native', function () {
   // Test 1: set a breakpoint, continue onto it, read the real stack.
   it('breakpoint → stack: real frames with correct file and line', async () => {
     activeSession = await startDebugSession();
-    await pollUntilStopped(port); // stopped at entry
+    await pollUntilStopped(port, 60000, 200, 7, 'test.php'); // stopped at entry (require_once)
 
     const setResp = await toolCall(port, 'set_breakpoint', {
       file: FIXTURE_SCRIPT,
@@ -200,7 +242,7 @@ describe('Xdebug E2E Native', function () {
     assert.strictEqual(setSc.results[0].verified, true, 'breakpoint should be verified');
 
     await toolCall(port, 'continue'); // run to the breakpoint
-    await pollUntilStopped(port);
+    await pollUntilStopped(port, 60000, 200, 10, 'test.php');
 
     const stackResp = await toolCall(port, 'stack');
     const stackSc = stackResp.result.structuredContent || stackResp.result;
@@ -214,14 +256,14 @@ describe('Xdebug E2E Native', function () {
   // Test 2: evaluate real PHP expressions at a breakpoint.
   it('evaluate_expr: real PHP expression evaluation', async () => {
     activeSession = await startDebugSession();
-    await pollUntilStopped(port);
+    await pollUntilStopped(port, 60000, 200, 7, 'test.php'); // stopped at entry
 
     await toolCall(port, 'set_breakpoint', {
       file: FIXTURE_SCRIPT,
       breakpoints: [{ line: 12 }],
     });
     await toolCall(port, 'continue');
-    await pollUntilStopped(port);
+    await pollUntilStopped(port, 60000, 200, 12, 'test.php');
 
     const evalResp = await toolCall(port, 'evaluate_expr', { expr: '$x' });
     const evalSc = evalResp.result.structuredContent || evalResp.result;
@@ -241,19 +283,19 @@ describe('Xdebug E2E Native', function () {
   // Test 3: step_over against a real Xdebug session.
   it('step_over: tool responds, session stays stopped', async () => {
     activeSession = await startDebugSession();
-    await pollUntilStopped(port);
+    await pollUntilStopped(port, 60000, 200, 7, 'test.php'); // stopped at entry
 
     await toolCall(port, 'set_breakpoint', {
       file: FIXTURE_SCRIPT,
       breakpoints: [{ line: 10 }],
     });
     await toolCall(port, 'continue');
-    await pollUntilStopped(port);
+    await pollUntilStopped(port, 60000, 200, 10, 'test.php');
 
     const stepResp = await toolCall(port, 'step_over');
     const stepSc = stepResp.result.structuredContent || stepResp.result;
     assert.ok(stepSc !== undefined, 'step_over should return a response');
-    await pollUntilStopped(port); // step lands, session stopped again
+    await pollUntilStopped(port, 60000, 200, 12, 'test.php'); // next statement: add() call
   });
 
   // Test 4: wait_for_stop returns stopped:true with a frame.
@@ -262,7 +304,7 @@ describe('Xdebug E2E Native', function () {
     // Ensure the session is stopped (status-based, reliable) before querying,
     // then resolve the real thread id so wait_for_stop's internal stack() call
     // doesn't race with adapter init.
-    await pollUntilStopped(port);
+    await pollUntilStopped(port, 60000, 200, 7, 'test.php'); // stopped at entry
     const threadsResp = await toolCall(port, 'threads');
     const tid = threadsResp.result?.structuredContent?.threads?.[0]?.id ?? threadsResp.result?.threads?.[0]?.id ?? 1;
     const wfsResp = await toolCall(port, 'wait_for_stop', {
@@ -278,13 +320,13 @@ describe('Xdebug E2E Native', function () {
   // Test 5: terminate removes the session from list_sessions.
   it('terminate: session removed after terminate', async () => {
     activeSession = await startDebugSession();
-    await pollUntilStopped(port);
+    await pollUntilStopped(port, 60000, 200, 7, 'test.php'); // stopped at entry
     await toolCall(port, 'set_breakpoint', {
       file: FIXTURE_SCRIPT,
       breakpoints: [{ line: 10 }],
     });
     await toolCall(port, 'continue');
-    await pollUntilStopped(port);
+    await pollUntilStopped(port, 60000, 200, 10, 'test.php');
 
     const termResp = await toolCall(port, 'terminate');
     const termSc = termResp.result.structuredContent || termResp.result;
@@ -299,5 +341,75 @@ describe('Xdebug E2E Native', function () {
     const listSc = listResp.result.structuredContent || listResp.result;
     const found = (listSc.sessions || []).some((s: any) => s.id === activeSession!.id);
     assert.strictEqual(found, false, 'session should not be in list_sessions after terminate');
+  });
+
+  // Test 6: step_out regression — Xdebug's intermediate stop at the return
+  // line must NOT require a second MCP step_out call. dapBridge's depth-based
+  // auto-repeat loop (max 3 iterations) absorbs the quirk.
+  it('step_out exits the function in a single MCP call (return-line quirk)', async () => {
+    activeSession = await startDebugSession();
+    await pollUntilStopped(port, 60000, 200, 7, 'test.php'); // stopped at entry
+
+    await toolCall(port, 'set_breakpoint', {
+      file: FIXTURE_SCRIPT,
+      breakpoints: [{ line: 12 }],
+    });
+    await toolCall(port, 'continue');
+    await pollUntilStopped(port, 60000, 200, 12, 'test.php'); // stopped at test.php:12 (add() call site)
+
+    await toolCall(port, 'step_in');
+    await pollUntilStopped(port, 60000, 200, 3, 'lib.php'); // inside add() — lands on lib.php:3 (return line)
+    const inStackResp = await toolCall(port, 'stack');
+    const inStackSc = inStackResp.result.structuredContent || inStackResp.result;
+    assert.strictEqual(inStackSc.frames[0].line, 3, 'step_in should stop at lib.php:3');
+    assert.ok(inStackSc.frames[0].source?.path?.includes('lib.php'), 'should be inside lib.php');
+
+    const stepOutResp = await toolCall(port, 'step_out');
+    const stepOutSc = stepOutResp.result.structuredContent || stepOutResp.result;
+    assert.strictEqual(
+      stepOutSc.exited,
+      true,
+      `step_out should exit add() in a single MCP call: ${JSON.stringify(stepOutSc).slice(0, 300)}`
+    );
+
+    await pollUntilStopped(port, 60000, 200, 13, 'test.php');
+    const stackResp = await toolCall(port, 'stack');
+    const stackSc = stackResp.result.structuredContent || stackResp.result;
+    const topFrame = stackSc.frames[0];
+    assert.strictEqual(topFrame.line, 13, 'should be back in test.php at line 13');
+    assert.notStrictEqual(topFrame.name, 'add', 'top frame should no longer be add()');
+  });
+
+  // Test 7: step_out regression — a mid-function stop must also exit in one
+  // MCP call (first stepOut stops at the return line, depth loop re-steps).
+  it('step_out exits greet() in a single MCP call (mid-function quirk)', async () => {
+    activeSession = await startDebugSession();
+    await pollUntilStopped(port, 60000, 200, 7, 'test.php'); // stopped at entry
+
+    // Breakpoint state is guaranteed clean by the beforeEach hook, which clears
+    // file and function breakpoints before every test (and after the suite).
+    await toolCall(port, 'set_function_breakpoints', {
+      breakpoints: [{ name: 'greet' }],
+    });
+    await toolCall(port, 'continue');
+    await pollUntilStopped(port, 60000, 200, 7, 'lib.php'); // stopped at lib.php:7 inside greet()
+    const inStackResp = await toolCall(port, 'stack');
+    const inStackSc = inStackResp.result.structuredContent || inStackResp.result;
+    assert.strictEqual(inStackSc.frames[0].line, 7, 'should stop at lib.php:7 inside greet()');
+    assert.ok(inStackSc.frames[0].source?.path?.includes('lib.php'), 'should be inside lib.php');
+
+    const stepOutResp = await toolCall(port, 'step_out');
+    const stepOutSc = stepOutResp.result.structuredContent || stepOutResp.result;
+    assert.strictEqual(
+      stepOutSc.exited,
+      true,
+      `step_out should exit greet() in a single MCP call: ${JSON.stringify(stepOutSc).slice(0, 300)}`
+    );
+
+    await pollUntilStopped(port, 60000, 200, 18, 'test.php');
+    const stackResp = await toolCall(port, 'stack');
+    const stackSc = stackResp.result.structuredContent || stackResp.result;
+    const topFrame = stackSc.frames[0];
+    assert.strictEqual(topFrame.line, 18, 'should be back in test.php at line 18');
   });
 });

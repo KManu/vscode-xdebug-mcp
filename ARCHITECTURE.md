@@ -141,10 +141,36 @@ Two categories tracked separately:
 | `pause` | `pause` | |
 | `step_over` | `next` | |
 | `step_in` | `stepIn` | |
-| `step_out` | `stepOut` | |
+| `step_out` | `stepOut` (depth-based auto-repeat, max 3) | see prose below |
 | `restart` | `restart` | |
 | `terminate` | `terminate` | optional `restart` flag |
 | `disconnect` | `disconnect` | terminateDebuggee/restart/suspendDebuggee flags |
+
+**`step_out` semantics (depth-based auto-repeat).** Xdebug's `step_out` stops
+first at the function's *return line* (an intermediate stop), so a single DAP
+`stepOut` does not leave the function. `dapBridge.stepOut()` probes the stack
+depth (`stack` with 256 levels), issues `stepOut`, then polls for the next stop
+(`waitForStepStop`, 150 ms poll, 10 s timeout) and compares:
+- depth decreased → the function was exited → returns `exited: true`.
+- depth unchanged but the top-frame name changed → adapter quirk; treated as exited.
+- depth unchanged with the same top frame → the Xdebug intermediate stop (return
+  line) → re-issues `stepOut` (max 3 iterations), then reports `exited: false`
+  with a message (e.g. stopped at a breakpoint inside the function).
+- depth INCREASED → the step landed on a breakpoint inside a nested callee;
+  re-stepping would exit the nested function, not the original one, so the loop
+  stops and reports `exited: false` with a message naming the nested stop.
+- at top level (depth ≤ 1) → a single `stepOut`, no loop: the tool returns
+  immediately WITHOUT waiting for the exit (`exited: true`, `iterations: 1`, a
+  `message` noting the immediate return) — the session may still stop at a
+  later breakpoint.
+
+The whole loop is bounded by ONE overall deadline (25 s, derived from the HTTP
+transport's 30 s request budget): the real xdebug.php-debug adapter queues
+`stackTrace` until the next stop and never throws `notStopped`, so each probe
+is raced against a timer and late responses are dropped; after the deadline no
+further `stepOut` commands are issued. The MCP `step_out` result carries
+`exited`, `iterations`, `frame`, `depthBefore`, `depthAfter`, and (when
+applicable) `message`.
 
 ### Breakpoints (mixed)
 | Tool | DAP Command | Notes |

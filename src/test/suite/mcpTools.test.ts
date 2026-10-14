@@ -603,6 +603,10 @@ describe('MCP Tools', function () {
       const resp = await toolCall(port, 'step_out');
       const sc = resp.result.structuredContent || resp.result;
       assert.strictEqual(sc.success, true, 'step_out should return success');
+      // The mock now shrinks its stack after each stepOut (depth 3 -> 2), so
+      // the bridge's depth loop must exit EARLY instead of hitting the cap.
+      assert.strictEqual(sc.exited, true, 'step_out should exit the function (depth decreased)');
+      assert.strictEqual(sc.iterations, 1, 'depth loop should exit after a single stepOut');
 
       await pollUntilStopped(port, 5000, 50);
 

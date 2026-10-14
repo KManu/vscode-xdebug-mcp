@@ -428,15 +428,34 @@ export function makeServer(options: { version?: string } = {}): McpServer {
     'step_out',
     {
       title: 'Step Out',
-      description: 'Step out',
+      description:
+        "Step out of the current function, waiting until the frame actually exits. Real Xdebug " +
+        "stops first at the function's return line (an intermediate stop), so this tool " +
+        'automatically re-issues stepOut (up to 3 attempts) until the stack depth decreases — a ' +
+        'single call exits the function to the caller. If the session is RUNNING, the tool waits ' +
+        'for the next stop before stepping (bounded by an overall deadline of about 25s, after ' +
+        'which no further step commands are issued). At top level (stack depth <= 1) it issues one ' +
+        'step and returns immediately without waiting for exit — the session may still stop at a ' +
+        'later breakpoint. If a breakpoint inside a nested function is hit mid-step, the tool ' +
+        'stops and reports it instead of stepping past it. Returns the success wrapper plus ' +
+        'exited/iterations/frame/depthBefore/depthAfter and, when applicable, message; message can ' +
+        'appear with exited:true (session ended during the step, or the immediate top-level return) ' +
+        'or with exited:false.',
       inputSchema: {
         sessionId: sessionIdSchema,
         threadId: z.number().int().positive().optional(),
       },
     },
     safeHandler(async ({ sessionId, threadId }): Promise<CallToolResult> => {
-      await dap.stepOut({ sessionId, threadId });
-      return okResult();
+      const result = await dap.stepOut({ sessionId, threadId });
+      return structuredResult({
+        exited: result.exited,
+        iterations: result.iterations,
+        frame: result.frame,
+        depthBefore: result.depthBefore,
+        depthAfter: result.depthAfter,
+        ...(result.message ? { message: result.message } : {}),
+      });
     })
   );
 
