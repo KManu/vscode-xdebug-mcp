@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.2.0 — 2026-10-15
+
+### Reliability & Resilience
+
+- **Native MCP server registration fixed**: `McpHttpServerDefinition` was built with a single options object instead of VS Code's positional `(label, uri, headers, version)` signature, so VS Code rejected the definition ("Expected string, but got object") and the extension never registered its MCP server with VS Code's native MCP client. Registration now uses the stable typed API without `as any` casts, which also surfaced and fixed a latent `string`-vs-`vscode.Uri` bug (`e9ab826`).
+- **`terminate` clears stale sessions**: `xdebug.php-debug` acknowledges `terminate` without promptly firing `terminated`, so sessions lingered in `list_sessions`; `terminate()` now polls for removal and falls back to `disconnect({ terminateDebuggee: true })` (`e9ab826`).
+- **`step_out` exits the function in one call**: Xdebug's DBGp `step_out` stops first at the function's return line, leaving the session one hop inside the frame; `dapBridge` now runs a depth-based auto-repeat loop (cap 3) under one 25s deadline (inside the 30s HTTP budget) and returns a structured `{ exited, iterations, frame, depthBefore, depthAfter }` result (`1af3f73`).
+- **Deterministic MCP teardown**: stopping the server (window reload, disable/enable, extension-host restart, quit) now releases the HTTP listener and the discovery file even while a client holds an SSE stream open. Previously `server.close()`'s callback never fired while a connection stayed open, so teardown hung and the port-file cleanup was unreachable. Teardown is now single-flight, bounded (~1.75s worst case), idempotent, and safe to call during an in-flight start (`3a88ee2`).
+- **Per-window discovery**: every window publishes `~/.vscode-xdebug-mcp/port.<pid>.json` alongside the shared `port.json` pointer, and readers resolve the newest live entry, so a second window on a fallback port no longer erases the first from discovery (`68c6fb2`).
+- **Output-channel disposal on deactivate**: the "Xdebug MCP" output channel is disposed after teardown settles; logging after deactivate falls back to the console instead of resurrecting a disposed channel, and re-activation re-arms cleanly (`b63a12c`).
+
 ### Testing
 
 - **Port-file flake fix**: The MCP port file is now isolated per test fork, eliminating an EPERM rename race and the intermittent single-test failure it caused (`ac0b51d`).
@@ -10,6 +21,7 @@
 ### Tooling
 
 - **Biome formatter**: Adopted Biome (`@biomejs/biome` 2.5.5) as the project formatter, ending formatter-induced working-tree churn.
+- **Repo cleanup**: Untracked agent state and ad-hoc working docs, and stopped packaging dev/agent tooling into the `.vsix` (`c29e7ed`).
 
 ---
 
