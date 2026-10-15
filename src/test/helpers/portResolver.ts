@@ -32,10 +32,7 @@ function sleep(ms: number): Promise<void> {
  * @param maxWaitMs     Maximum time to wait (default 10s).
  * @param pollIntervalMs Interval between polls (default 200ms).
  */
-export async function getServerPort(
-  maxWaitMs = 10000,
-  pollIntervalMs = 200,
-): Promise<PortInfo> {
+export async function getServerPort(maxWaitMs = 10000, pollIntervalMs = 200): Promise<PortInfo> {
   const start = Date.now();
   while (Date.now() - start < maxWaitMs) {
     try {
@@ -47,11 +44,7 @@ export async function getServerPort(
         continue;
       }
 
-      if (
-        parsed?.port &&
-        typeof parsed.port === 'number' &&
-        typeof parsed.host === 'string'
-      ) {
+      if (parsed?.port && typeof parsed.port === 'number' && typeof parsed.host === 'string') {
         try {
           process.kill(parsed.pid as number, 0);
         } catch {

@@ -136,3 +136,6 @@ dist
 .pnp.*
 *.vsix
 *.vsix
+
+# pi taskflow run state
+.pi/taskflows/

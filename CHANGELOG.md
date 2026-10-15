@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Testing
+
+- **Port-file flake fix**: The MCP port file is now isolated per test fork, eliminating an EPERM rename race and the intermittent single-test failure it caused (`ac0b51d`).
+- **E2E suites verified in a real VS Code instance**: The native CLI launch suite and the web/Apache session-identification suite (`npm run test:e2e:win`) pass in a real VS Code instance against real Xdebug (XAMPP PHP 8.2.12, Xdebug 3.5.3).
+
+### Tooling
+
+- **Biome formatter**: Adopted Biome (`@biomejs/biome` 2.5.5) as the project formatter, ending formatter-induced working-tree churn.
+
+---
+
 ## 0.1.0 — 2026-05-14
 
 ### Reliability & Resilience
@@ -26,7 +39,7 @@
 - **Normalized `restart()` signature**: Now takes `{ sessionId?: string }` options object, matching all other bridge functions.
 - **Consolidated test mocks**: `src/__tests__/mockVscode.ts` is now used by all test files (was previously dead code). Added `src/__tests__/setup.ts` for global vitest setup.
 
-### Test Coverage (149 → 170 tests)
+### Test Coverage (149 → 199 tests)
 
 - Resource handler tests: `xdebug://stack` and `xdebug://variables/{frameId}`
 - `wait_for_stop` error propagation tests

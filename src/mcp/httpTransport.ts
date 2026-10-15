@@ -18,6 +18,40 @@ let runningServer: HttpServer | undefined;
 let serverUriPromise: Promise<string> | undefined;
 let lastKnownUri: string | undefined;
 
+// Extract the JSON-RPC request id for the 408 timeout response: string ids are
+// valid JSON-RPC (they are typically not used by MCP clients, but the server
+// must echo whatever the client sent), and notifications carry no id.
+export function extractJsonRpcId(body: unknown): number | string | null {
+  if (body && typeof body === 'object' && 'id' in body) {
+    const id = (body as Record<string, unknown>).id;
+    if (typeof id === 'number' || typeof id === 'string') {
+      return id;
+    }
+  }
+  return null;
+}
+
+// Build the 408 JSON-RPC error response. Echoing the original request id keeps
+// the response well-formed (previously id: null even when the client sent one).
+export function handleRequestTimeout(
+  req: IncomingMessage,
+  res: ServerResponse,
+  parsedBody: unknown
+): void {
+  if (!res.headersSent) {
+    res.statusCode = 408;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        error: { code: -32000, message: 'Request timeout' },
+        id: extractJsonRpcId(parsedBody),
+      })
+    );
+  }
+  req.destroy();
+}
+
 export async function startHttpServer(options: { version?: string } = {}): Promise<string> {
   // Prevent multiple simultaneous server starts on extension reloads.
   if (serverUriPromise) {
@@ -25,30 +59,25 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
   }
 
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    // Parsed body, in scope for the timeout handler below (declared before it
+    // is registered so the 408 can echo the original request id).
+    let parsedBody: unknown | undefined;
+
     // Enforce a request timeout so slow clients cannot block the event loop.
-    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
-      if (!res.headersSent) {
-        res.statusCode = 408;
-        res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({
-          jsonrpc: '2.0',
-          error: { code: -32000, message: 'Request timeout' },
-          id: null
-        }));
-      }
-      req.destroy();
-    });
+    req.setTimeout(REQUEST_TIMEOUT_MS, () => handleRequestTimeout(req, res, parsedBody));
 
     // Health check endpoint for monitoring and diagnostics.
     const url = new URL(req.url ?? '/', `http://${HOST}:${DEFAULT_PORT}`);
     if (url.pathname === '/health' && req.method === 'GET') {
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({
-        status: 'ok',
-        version: options.version,
-        uptime: process.uptime()
-      }));
+      res.end(
+        JSON.stringify({
+          status: 'ok',
+          version: options.version,
+          uptime: process.uptime(),
+        })
+      );
       return;
     }
 
@@ -63,7 +92,7 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
     const server = makeServer({ version: options.version });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
-      enableJsonResponse: true
+      enableJsonResponse: true,
     });
 
     // Normalize headers so the MCP SDK sees the expected Accept/Content-Type.
@@ -88,7 +117,7 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
         let size = 0;
         const chunks: Buffer[] = [];
 
-        req.on('data', chunk => {
+        req.on('data', (chunk) => {
           const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
           size += buffer.length;
           if (size > MAX_BODY_BYTES) {
@@ -134,7 +163,6 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
     // Clean up when the client disconnects (important for streaming responses).
     res.on('close', handleClose);
 
-    let parsedBody: unknown | undefined;
     if (req.method === 'POST') {
       try {
         parsedBody = await readJsonBody();
@@ -151,9 +179,9 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
               error: {
                 code: -32700,
                 message: status === 413 ? 'Payload too large' : 'Parse error',
-                data: message
+                data: message,
               },
-              id: null
+              id: null,
             })
           );
         }
@@ -223,11 +251,17 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
         if (portAttempts >= MAX_PORT_ATTEMPTS) {
           serverUriPromise = undefined;
           runningServer = undefined;
-          reject(new Error(`Failed to bind MCP server after ${MAX_PORT_ATTEMPTS} attempts. Port ${DEFAULT_PORT} and dynamic ports are all occupied.`));
+          reject(
+            new Error(
+              `Failed to bind MCP server after ${MAX_PORT_ATTEMPTS} attempts. Port ${DEFAULT_PORT} and dynamic ports are all occupied.`
+            )
+          );
           return;
         }
         const fallbackPort = portAttempts === 1 ? 0 : undefined;
-        log.info(`Port ${DEFAULT_PORT} in use, falling back to dynamic port (attempt ${portAttempts}/${MAX_PORT_ATTEMPTS - 1})`);
+        log.info(
+          `Port ${DEFAULT_PORT} in use, falling back to dynamic port (attempt ${portAttempts}/${MAX_PORT_ATTEMPTS - 1})`
+        );
         tryListen(fallbackPort ?? 0);
       } else {
         serverUriPromise = undefined;

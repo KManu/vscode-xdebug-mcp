@@ -31,7 +31,7 @@ export function readWorkspaceMcpJson(workspaceRoot: string): Record<string, unkn
  */
 export function addXdebugToMcpJson(
   existing: Record<string, unknown> | null,
-  uri: string,
+  uri: string
 ): { config: Record<string, unknown>; isNew: boolean } {
   const base = existing ?? {};
   const servers = (base.servers as Record<string, unknown>) ?? {};
@@ -54,7 +54,7 @@ export function addXdebugToMcpJson(
  */
 export function previewMcpJsonChange(
   workspaceRoot: string,
-  uri: string,
+  uri: string
 ): { before: string; after: string; isNewFile: boolean } | { error: string } {
   const existing = readWorkspaceMcpJson(workspaceRoot);
   const before = existing !== null ? JSON.stringify(existing, null, 2) : '{}';

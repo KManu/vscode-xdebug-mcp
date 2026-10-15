@@ -1,6 +1,6 @@
 import * as http from 'node:http';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
-import { startHttpServer, stopHttpServer } from '../mcp/httpTransport';
+import { startHttpServer, stopHttpServer, extractJsonRpcId, handleRequestTimeout } from '../mcp/httpTransport';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 
 vi.mock('../mcp/server', () => ({
@@ -52,8 +52,8 @@ vi.mock('@modelcontextprotocol/sdk/server/streamableHttp.js', () => ({
             result: {
               protocolVersion: '2024-11-05',
               capabilities: {},
-              serverInfo: { name: 'xdebug-mcp', version: '0.0.1' }
-            }
+              serverInfo: { name: 'xdebug-mcp', version: '0.0.1' },
+            },
           });
           return Promise.resolve();
         }
@@ -68,10 +68,10 @@ vi.mock('@modelcontextprotocol/sdk/server/streamableHttp.js', () => ({
               content: [
                 {
                   type: 'text',
-                  text: JSON.stringify({ success: true, ...params })
-                }
-              ]
-            }
+                  text: JSON.stringify({ success: true, ...params }),
+                },
+              ],
+            },
           });
           return Promise.resolve();
         }
@@ -83,8 +83,8 @@ vi.mock('@modelcontextprotocol/sdk/server/streamableHttp.js', () => ({
             id: requestId,
             error: {
               code: -32601,
-              message: 'Method not found'
-            }
+              message: 'Method not found',
+            },
           });
           return Promise.resolve();
         }
@@ -116,7 +116,7 @@ function makePostRequest(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Accept': 'application/json, text/event-stream',
+          Accept: 'application/json, text/event-stream',
         },
       },
       (res) => {
@@ -161,7 +161,7 @@ function makeGetRequest(serverUrl: string): Promise<{ statusCode: number; body: 
         port: url.port,
         path: url.pathname,
         method: 'GET',
-        headers: { 'Accept': 'text/event-stream' },
+        headers: { Accept: 'text/event-stream' },
       },
       (res) => {
         const chunks: Buffer[] = [];
@@ -280,20 +280,12 @@ describe('httpTransport body size limits', () => {
 
 describe('httpTransport path routing', () => {
   it('should return 404 for non-/mcp paths', async () => {
-    const res = await makeRawRequest(
-      sharedServerUrl,
-      { method: 'GET', path: '/other' },
-      null
-    );
+    const res = await makeRawRequest(sharedServerUrl, { method: 'GET', path: '/other' }, null);
     expect(res.statusCode).toBe(404);
   });
 
   it('should return 404 for /mcp/extra path', async () => {
-    const res = await makeRawRequest(
-      sharedServerUrl,
-      { method: 'GET', path: '/mcp/extra' },
-      null
-    );
+    const res = await makeRawRequest(sharedServerUrl, { method: 'GET', path: '/mcp/extra' }, null);
     expect(res.statusCode).toBe(404);
   });
 });
@@ -335,8 +327,8 @@ describe('httpTransport MCP protocol integration', () => {
       method: 'tools/call',
       params: {
         name: 'threads',
-        arguments: {}
-      }
+        arguments: {},
+      },
     };
 
     const res = await makePostRequest(sharedServerUrl, JSON.stringify(jsonRpcRequest));
@@ -358,8 +350,8 @@ describe('httpTransport MCP protocol integration', () => {
       params: {
         protocolVersion: '2024-11-05',
         capabilities: {},
-        clientInfo: { name: 'test', version: '1.0.0' }
-      }
+        clientInfo: { name: 'test', version: '1.0.0' },
+      },
     };
 
     const res = await makePostRequest(sharedServerUrl, JSON.stringify(initRequest));
@@ -376,7 +368,7 @@ describe('httpTransport MCP protocol integration', () => {
       jsonrpc: '2.0',
       id: 1,
       method: 'unknown/method',
-      params: {}
+      params: {},
     };
 
     const res = await makePostRequest(sharedServerUrl, JSON.stringify(badRequest));
@@ -451,11 +443,7 @@ describe('httpTransport header normalization', () => {
   });
 
   it('should add Accept header to GET requests without it', async () => {
-    await makeRawRequest(
-      sharedServerUrl,
-      { method: 'GET' },
-      null
-    );
+    await makeRawRequest(sharedServerUrl, { method: 'GET' }, null);
 
     const headers = getLastTransportRequestHeaders();
     expect(headers).toBeDefined();
@@ -477,11 +465,7 @@ describe('httpTransport header normalization', () => {
 
   it('should not override existing Accept header on GET when it contains text/event-stream', async () => {
     const originalAccept = 'text/event-stream';
-    await makeRawRequest(
-      sharedServerUrl,
-      { method: 'GET', headers: { Accept: originalAccept } },
-      null
-    );
+    await makeRawRequest(sharedServerUrl, { method: 'GET', headers: { Accept: originalAccept } }, null);
 
     const headers = getLastTransportRequestHeaders();
     expect(headers).toBeDefined();
@@ -503,7 +487,10 @@ describe('httpTransport header normalization', () => {
   it('should not override existing Content-Type header on POST', async () => {
     await makeRawRequest(
       sharedServerUrl,
-      { method: 'POST', headers: { 'Content-Type': 'application/vnd.api+json', Accept: 'application/json, text/event-stream' } },
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/vnd.api+json', Accept: 'application/json, text/event-stream' },
+      },
       JSON.stringify({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'threads' }, id: 1 })
     );
 
@@ -513,14 +500,81 @@ describe('httpTransport header normalization', () => {
   });
 
   it('should not add Content-Type header to GET requests', async () => {
-    await makeRawRequest(
-      sharedServerUrl,
-      { method: 'GET' },
-      null
-    );
+    await makeRawRequest(sharedServerUrl, { method: 'GET' }, null);
 
     const headers = getLastTransportRequestHeaders();
     expect(headers).toBeDefined();
     expect(headers!['content-type']).toBeUndefined();
+  });
+});
+
+describe('httpTransport request timeout (408 id echo)', () => {
+  // The 30s socket timeout fires on a real timer, so instead of waiting for it
+  // we call handleRequestTimeout directly with mock req/res — the handler the
+  // timeout callback delegates to — and assert the exact 408 response.
+  const makeMocks = () => {
+    const destroyed = { value: false };
+    const req = {
+      destroy: vi.fn(() => {
+        destroyed.value = true;
+      }),
+    } as unknown as http.IncomingMessage;
+    const res = {
+      headersSent: false,
+      statusCode: 0,
+      setHeader: vi.fn(),
+      end: vi.fn(),
+    } as unknown as http.ServerResponse;
+    return { req, res, destroyed };
+  };
+
+  it('echoes a numeric request id in the 408 error response', () => {
+    const { req, res, destroyed } = makeMocks();
+    const parsedBody = { jsonrpc: '2.0', method: 'tools/call', params: {}, id: 42 };
+
+    handleRequestTimeout(req, res, parsedBody);
+
+    expect(res.statusCode).toBe(408);
+    expect(res.setHeader).toHaveBeenCalledWith('Content-Type', 'application/json');
+    expect(res.end).toHaveBeenCalledWith(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        error: { code: -32000, message: 'Request timeout' },
+        id: 42,
+      })
+    );
+    expect(destroyed.value).toBe(true);
+  });
+
+  it('echoes a string request id', () => {
+    const { req, res } = makeMocks();
+    handleRequestTimeout(req, res, { jsonrpc: '2.0', method: 'x', id: 'abc' });
+
+    expect(JSON.parse((res.end as ReturnType<typeof vi.fn>).mock.calls[0][0] as string).id).toBe('abc');
+  });
+
+  it('returns id: null for notifications (no id in the request)', () => {
+    const { req, res } = makeMocks();
+    handleRequestTimeout(req, res, { jsonrpc: '2.0', method: 'x' });
+
+    expect(JSON.parse((res.end as ReturnType<typeof vi.fn>).mock.calls[0][0] as string).id).toBeNull();
+  });
+
+  it('does not write a response when headers were already sent', () => {
+    const { req, res, destroyed } = makeMocks();
+    (res as unknown as { headersSent: boolean }).headersSent = true;
+
+    handleRequestTimeout(req, res, { jsonrpc: '2.0', id: 1 });
+
+    expect(res.end).not.toHaveBeenCalled();
+    expect(destroyed.value).toBe(true);
+  });
+
+  it('extractJsonRpcId: number/string/notification/undefined', () => {
+    expect(extractJsonRpcId({ jsonrpc: '2.0', id: 7 })).toBe(7);
+    expect(extractJsonRpcId({ jsonrpc: '2.0', id: 'abc' })).toBe('abc');
+    expect(extractJsonRpcId({ jsonrpc: '2.0', method: 'x' })).toBeNull();
+    expect(extractJsonRpcId(undefined)).toBeNull();
+    expect(extractJsonRpcId('not an object')).toBeNull();
   });
 });

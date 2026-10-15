@@ -7,11 +7,7 @@ export default defineConfig({
     pool: 'forks',
     globals: true,
     setupFiles: ['./src/__tests__/setup.ts'],
-    exclude: [
-      'src/test/**',
-      'out/test/**',
-      'node_modules/**',
-    ],
+    exclude: ['src/test/**', 'out/test/**', 'node_modules/**', '**/node_modules/**', '.vscode-test/**'],
   },
   resolve: {
     alias: {

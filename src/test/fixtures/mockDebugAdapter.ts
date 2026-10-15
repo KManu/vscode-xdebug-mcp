@@ -53,6 +53,7 @@ class MockDebugAdapter implements vscode.DebugAdapter {
   // ---- breakpoint ID counters -----------------------------------------
   private nextBpId = 1;
   private nextFuncBpId = 1;
+  private stepOutCount = 0; // each stepOut shrinks the mock stack by one frame
 
   // ====================================================================
   //  handleMessage – main DAP dispatch
@@ -265,40 +266,66 @@ class MockDebugAdapter implements vscode.DebugAdapter {
 
   // --- stackTrace -----------------------------------------------------
   private handleStackTrace(request: DapRequest): void {
-    this._sendResponse(request, {
-      stackFrames: [
-        {
-          id: 0,
-          name: 'index.php:10',
-          source: {
-            name: 'index.php',
-            path: '/home/user/test-workspace/index.php',
-          },
-          line: 10,
-          column: 1,
-        },
-        {
-          id: 1,
-          name: 'helper',
-          source: {
-            name: 'helper.php',
-            path: '/home/user/test-workspace/helper.php',
-          },
-          line: 5,
-          column: 1,
-        },
-        {
-          id: 2,
-          name: '{main}',
-          source: {
-            name: 'index.php',
-            path: '/home/user/test-workspace/index.php',
-          },
-          line: 1,
-          column: 1,
-        },
-      ],
-    });
+    // After each stepOut the mock exits one frame, mirroring the real adapter's
+    // depth decrease. This lets step_out integration tests prove the bridge
+    // loop exits early (depth 3 -> 2) instead of hitting the iteration cap.
+    const frames =
+      this.stepOutCount >= 1
+        ? [
+            {
+              id: 1,
+              name: 'helper',
+              source: {
+                name: 'helper.php',
+                path: '/home/user/test-workspace/helper.php',
+              },
+              line: 5,
+              column: 1,
+            },
+            {
+              id: 2,
+              name: '{main}',
+              source: {
+                name: 'index.php',
+                path: '/home/user/test-workspace/index.php',
+              },
+              line: 1,
+              column: 1,
+            },
+          ]
+        : [
+            {
+              id: 0,
+              name: 'index.php:10',
+              source: {
+                name: 'index.php',
+                path: '/home/user/test-workspace/index.php',
+              },
+              line: 10,
+              column: 1,
+            },
+            {
+              id: 1,
+              name: 'helper',
+              source: {
+                name: 'helper.php',
+                path: '/home/user/test-workspace/helper.php',
+              },
+              line: 5,
+              column: 1,
+            },
+            {
+              id: 2,
+              name: '{main}',
+              source: {
+                name: 'index.php',
+                path: '/home/user/test-workspace/index.php',
+              },
+              line: 1,
+              column: 1,
+            },
+          ];
+    this._sendResponse(request, { stackFrames: frames });
   }
 
   // --- scopes ---------------------------------------------------------
@@ -400,6 +427,9 @@ class MockDebugAdapter implements vscode.DebugAdapter {
 
   // --- step commands (next / stepIn / stepOut) ------------------------
   private handleStep(request: DapRequest, cmd: string): void {
+    if (cmd === 'stepOut') {
+      this.stepOutCount += 1;
+    }
     this.isRunning = false;
     this.terminated = false;
     this._sendResponse(request, {});
@@ -425,6 +455,7 @@ class MockDebugAdapter implements vscode.DebugAdapter {
     this.nextFuncBpId = 1;
     this.fileBreakpoints = [];
     this.functionBreakpoints = [];
+    this.stepOutCount = 0; // restart = fresh script run: full stack again
     this._sendResponse(request, {});
     this._fireEvent('stopped', {
       reason: 'breakpoint',

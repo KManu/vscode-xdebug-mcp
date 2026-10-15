@@ -47,6 +47,15 @@ export const log = {
     }
   },
 
+  warn(message: string): void {
+    const ch = getChannel();
+    if (ch) {
+      ch.appendLine(`[${timestamp()}] WARN: ${message}`);
+    } else {
+      console.warn(`[xdebug-mcp] ${message}`);
+    }
+  },
+
   /** Call once during extension activation to set the channel name. */
   init(name: string): void {
     channelName = name;

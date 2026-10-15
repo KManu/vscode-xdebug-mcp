@@ -11,14 +11,14 @@ const esbuildProblemMatcherPlugin = {
     build.onStart(() => {
       console.log('[watch] build started');
     });
-    build.onEnd(result => {
+    build.onEnd((result) => {
       const errors = result.errors ?? [];
       for (const error of errors) {
         console.error(error);
       }
       console.log('[watch] build finished');
     });
-  }
+  },
 };
 
 async function main() {
@@ -33,7 +33,7 @@ async function main() {
     outfile: 'dist/extension.js',
     external: ['vscode'],
     logLevel: 'warning',
-    plugins: [esbuildProblemMatcherPlugin]
+    plugins: [esbuildProblemMatcherPlugin],
   });
 
   if (watch) {
@@ -44,7 +44,7 @@ async function main() {
   }
 }
 
-main().catch(error => {
+main().catch((error) => {
   console.error(error);
   process.exit(1);
 });

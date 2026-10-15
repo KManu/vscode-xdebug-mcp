@@ -3,7 +3,9 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { log } from './logger';
 
-const PORT_DIR = path.join(os.homedir(), '.vscode-xdebug-mcp');
+// Tests override this to a per-process temp dir so parallel test files
+// don't race on the real port file (EPERM on Windows atomic rename).
+const PORT_DIR = process.env.XDEBUG_MCP_PORT_DIR || path.join(os.homedir(), '.vscode-xdebug-mcp');
 const PORT_FILE = path.join(PORT_DIR, 'port.json');
 const TMP_FILE = path.join(PORT_DIR, 'port.json.tmp');
 
@@ -39,7 +41,11 @@ export function writePortFile(info: PortInfo): void {
     const message = error instanceof Error ? error.message : String(error);
     log.error(`Failed to write port file: ${message}`);
     // Best-effort cleanup of tmp file.
-    try { fs.unlinkSync(TMP_FILE); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(TMP_FILE);
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -144,5 +150,9 @@ export function cleanupPortFile(): void {
     // File may not exist; that's fine.
   }
   // Best-effort removal of tmp file.
-  try { fs.unlinkSync(TMP_FILE); } catch { /* ignore */ }
+  try {
+    fs.unlinkSync(TMP_FILE);
+  } catch {
+    /* ignore */
+  }
 }

@@ -16,31 +16,17 @@ import {
 // manipulating fs behavior. Instead, we test the read/write cycle using the actual
 // functions, then clean up.
 
-const testDir = path.join(os.tmpdir(), 'vscode-xdebug-mcp-test-' + process.pid);
-
-// Patch the port file location before importing (won't work since it's already imported).
-// Instead we write to the real path and clean up, which is safe since tests run in forks.
-
-const originalHomedir = os.homedir;
+// The port dir is redirected per-fork by src/__tests__/setup.ts via
+// XDEBUG_MCP_PORT_DIR, so tests never touch the real ~/.vscode-xdebug-mcp.
+const testPortDir =
+  process.env.XDEBUG_MCP_PORT_DIR || path.join(os.tmpdir(), 'vscode-xdebug-mcp-test-' + process.pid);
 
 describe('portFile', () => {
-  const REAL_PORT_DIR = path.join(originalHomedir(), '.vscode-xdebug-mcp');
-  const REAL_PORT_FILE = path.join(REAL_PORT_DIR, 'port.json');
-  const REAL_TMP_FILE = path.join(REAL_PORT_DIR, 'port.json.tmp');
-
-  // Capture state before tests
-  let preExistingFile = false;
-  let preExistingContent: string | null = null;
+  const PORT_DIR = testPortDir;
+  const PORT_FILE = path.join(PORT_DIR, 'port.json');
+  const TMP_FILE = path.join(PORT_DIR, 'port.json.tmp');
 
   beforeEach(() => {
-    // Save any pre-existing port file content
-    try {
-      preExistingContent = fs.readFileSync(REAL_PORT_FILE, 'utf8');
-      preExistingFile = true;
-    } catch {
-      preExistingFile = false;
-    }
-
     // Clean up from any previous test run
     cleanupPortFile();
   });
@@ -48,16 +34,6 @@ describe('portFile', () => {
   afterEach(() => {
     // Clean up test artifacts
     cleanupPortFile();
-
-    // Restore pre-existing file if there was one
-    if (preExistingFile && preExistingContent !== null) {
-      try {
-        fs.mkdirSync(REAL_PORT_DIR, { recursive: true });
-        fs.writeFileSync(REAL_PORT_FILE, preExistingContent, { encoding: 'utf8' });
-      } catch {
-        // Best effort
-      }
-    }
   });
 
   describe('writePortFile and readPortFile', () => {
@@ -72,7 +48,7 @@ describe('portFile', () => {
       });
 
       // Temp file should be gone (atomic rename consumed it)
-      expect(() => fs.statSync(REAL_TMP_FILE)).toThrow();
+      expect(() => fs.statSync(TMP_FILE)).toThrow();
 
       const info = readPortFile();
       expect(info).not.toBeNull();
@@ -92,15 +68,15 @@ describe('portFile', () => {
     });
 
     it('should return null for invalid JSON', () => {
-      fs.mkdirSync(REAL_PORT_DIR, { recursive: true });
-      fs.writeFileSync(REAL_PORT_FILE, 'not json', 'utf8');
+      fs.mkdirSync(PORT_DIR, { recursive: true });
+      fs.writeFileSync(PORT_FILE, 'not json', 'utf8');
       const info = readPortFile();
       expect(info).toBeNull();
     });
 
     it('should return null for JSON with missing required fields', () => {
-      fs.mkdirSync(REAL_PORT_DIR, { recursive: true });
-      fs.writeFileSync(REAL_PORT_FILE, JSON.stringify({ foo: 'bar' }), 'utf8');
+      fs.mkdirSync(PORT_DIR, { recursive: true });
+      fs.writeFileSync(PORT_FILE, JSON.stringify({ foo: 'bar' }), 'utf8');
       const info = readPortFile();
       expect(info).toBeNull();
     });
@@ -195,7 +171,9 @@ describe('portFile', () => {
       try {
         process.kill(fakePid, 0);
         fakePidAlive = true;
-      } catch { /* expected */ }
+      } catch {
+        /* expected */
+      }
 
       writePortFile({
         uri: 'http://127.0.0.1:3098/mcp',
@@ -262,9 +240,9 @@ describe('portFile', () => {
         started: new Date().toISOString(),
       });
 
-      expect(() => fs.statSync(REAL_PORT_FILE)).not.toThrow();
+      expect(() => fs.statSync(PORT_FILE)).not.toThrow();
       cleanupPortFile();
-      expect(() => fs.statSync(REAL_PORT_FILE)).toThrow();
+      expect(() => fs.statSync(PORT_FILE)).toThrow();
     });
 
     it('should not throw if file does not exist', () => {
