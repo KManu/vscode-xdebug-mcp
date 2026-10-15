@@ -7,7 +7,7 @@ Expose your active PHP/Xdebug session as an MCP server inside VS Code so agent c
 - Bridges MCP tool calls to the VS Code Debug Adapter Protocol (DAP) for your active PHP/Xdebug session.
 - Provides tools to list sessions, inspect stack/variables, set breakpoints, and control execution.
 
-> **Multiple VS Code instances:** The extension automatically handles port conflicts. If port `3098` is already bound, it falls back to an OS-assigned port. The actual port is written to `~/.vscode-xdebug-mcp/port.json` and shown in the VS Code status bar.
+> **Multiple VS Code instances:** The extension automatically handles port conflicts. If port `3098` is already bound, it falls back to an OS-assigned port. Every window publishes its own discovery file `~/.vscode-xdebug-mcp/port.<pid>.json` (with `port.json` kept as a shared, last-writer-wins pointer for older readers), so all running windows stay discoverable; the port is shown in the VS Code status bar.
 
 ## Connecting MCP clients
 
@@ -71,6 +71,8 @@ The extension writes the active MCP URI to `~/.vscode-xdebug-mcp/port.json`:
 ```
 
 External CLI tools and scripts can read this file to discover the active port. When the server stops, the file is marked `{"status": "stopped"}`.
+
+Each window also writes its own `~/.vscode-xdebug-mcp/port.<pid>.json` with the same shape. `port.json` can only describe one window (whichever wrote last), so multi-window-aware readers should scan the directory, keep entries whose `pid` is alive, and pick the newest `started` timestamp; `port.<pid>.json` survives another window overwriting the shared pointer. Both files are removed when the owning window stops, and stale entries from crashed windows are swept on the next activation.
 
 > **Note on Codex:** Codex currently uses TOML config (`~/.codex/config.toml`) and does not automatically discover MCP servers from VS Code extensions. Use the `Copy MCP Client Config Snippet` command and paste into your Codex config.
 

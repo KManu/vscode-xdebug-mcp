@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   writePortFile,
   writeStoppedFile,
@@ -12,8 +12,28 @@ import {
   cleanupPortFile,
   releaseOwnedPortFile,
   sweepStalePortFiles,
+  listActivePortInfos,
+  PER_PID_PORT_FILE,
   TMP_FILE,
 } from '../utils/portFile';
+
+// Mock node:fs with one switch: when `unlinkFailure.enabled` is set, unlinking
+// this window's per-instance entry throws (Windows EPERM with an open reader).
+// Every other fs operation delegates to the real implementation, and the
+// switch is off unless a test enables it.
+const unlinkFailure = vi.hoisted(() => ({ enabled: false }));
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    unlinkSync: (p: Parameters<typeof actual.unlinkSync>[0]) => {
+      if (unlinkFailure.enabled && String(p).endsWith(`port.${process.pid}.json`)) {
+        throw new Error('EPERM: simulated open reader');
+      }
+      return actual.unlinkSync(p);
+    },
+  };
+});
 
 // We test the real port file module by monkey-patching the port dir to a temp location.
 // The module constants are at module level, so we override via process.env or by
@@ -463,6 +483,193 @@ describe('portFile', () => {
       fs.rmSync(PORT_DIR, { recursive: true, force: true });
  
       expect(sweepStalePortFiles()).toEqual({ removed: [], kept: [] });
+    });
+  });
+
+  describe('per-instance discovery (multi-window)', () => {
+    /** A PID that is guaranteed dead (same technique as the sweep tests). */
+    function deadPid(): number {
+      const child = spawnSync(process.execPath, ['-e', '']);
+      const pid = child.pid;
+      if (typeof pid !== 'number' || pid <= 0) {
+        throw new Error('spawnSync did not report a helper PID');
+      }
+      expect(() => process.kill(pid, 0)).toThrow();
+      return pid;
+    }
+
+    /** A real, live second process standing in for another VS Code window. */
+    function liveChild(): { pid: number; stop: () => void } {
+      const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+      const pid = child.pid;
+      if (typeof pid !== 'number' || pid <= 0) {
+        throw new Error('spawn did not report a helper PID');
+      }
+      expect(() => process.kill(pid, 0)).not.toThrow();
+      return { pid, stop: () => child.kill() };
+    }
+
+    function entry(pid: number, port: number, started: string) {
+      return {
+        uri: `http://127.0.0.1:${port}/mcp`,
+        host: '127.0.0.1',
+        port,
+        version: '1.0.0',
+        pid,
+        started,
+      };
+    }
+
+    function writeEntryFile(pid: number, info: ReturnType<typeof entry>): string {
+      fs.mkdirSync(PORT_DIR, { recursive: true });
+      const filePath = path.join(PORT_DIR, `port.${pid}.json`);
+      fs.writeFileSync(filePath, JSON.stringify(info, null, 2), 'utf8');
+      return filePath;
+    }
+
+    function writePointer(info: ReturnType<typeof entry>): void {
+      fs.mkdirSync(PORT_DIR, { recursive: true });
+      fs.writeFileSync(PORT_FILE, JSON.stringify(info, null, 2), 'utf8');
+    }
+
+    it('publishes a per-instance entry alongside the shared pointer', () => {
+      writePortFile(entry(process.pid, 3098, new Date().toISOString()));
+
+      expect(path.basename(PER_PID_PORT_FILE)).toBe(`port.${process.pid}.json`);
+      expect(fs.existsSync(PER_PID_PORT_FILE)).toBe(true);
+      expect(JSON.parse(fs.readFileSync(PER_PID_PORT_FILE, 'utf8'))).toMatchObject({
+        pid: process.pid,
+        port: 3098,
+      });
+      expect(readPortFile()).toMatchObject({ pid: process.pid, port: 3098 });
+    });
+
+    it('ignores per-instance entries whose owner is dead', () => {
+      const dead = deadPid();
+      const filePath = writeEntryFile(dead, entry(dead, 4001, new Date().toISOString()));
+
+      try {
+        expect(listActivePortInfos()).toEqual([]);
+        expect(getActiveUri()).toBeNull();
+        expect(getActivePortInfo()).toBeNull();
+      } finally {
+        fs.rmSync(filePath, { force: true });
+      }
+    });
+
+    it('lists every live window once, newest first, and tracks the newest in getActiveUri', () => {
+      const child = liveChild();
+      const older = new Date(Date.now() - 5000).toISOString();
+      const newer = new Date().toISOString();
+      const childFile = writeEntryFile(child.pid, entry(child.pid, 4001, newer));
+      // This window publishes its own (older) entry plus the shared pointer.
+      writePortFile(entry(process.pid, 3098, older));
+
+      try {
+        const live = listActivePortInfos();
+        // The pointer duplicates this window's entry: de-duplicated by PID.
+        expect(live.map((i) => i.pid)).toEqual([child.pid, process.pid]);
+        expect(getActiveUri()).toBe('http://127.0.0.1:4001/mcp');
+
+        // The other window disappearing falls back to this window's entry.
+        fs.rmSync(childFile, { force: true });
+        expect(getActiveUri()).toBe('http://127.0.0.1:3098/mcp');
+        expect(getActivePortInfo()).toMatchObject({ pid: process.pid, port: 3098 });
+      } finally {
+        fs.rmSync(childFile, { force: true });
+        child.stop();
+      }
+    });
+
+    it('releases this window\u2019s per-instance entry even when the shared pointer is foreign', () => {
+      const child = liveChild();
+      const started = new Date().toISOString();
+      const childFile = writeEntryFile(child.pid, entry(child.pid, 4001, started));
+      writePointer(entry(child.pid, 4001, started));
+      const ownFile = writeEntryFile(process.pid, entry(process.pid, 3098, started));
+
+      try {
+        const outcome = releaseOwnedPortFile('http://127.0.0.1:3098/mcp');
+        expect(outcome).toBe('foreign');
+        expect(fs.existsSync(ownFile)).toBe(false);
+        // The foreign window keeps both of its files.
+        expect(fs.existsSync(childFile)).toBe(true);
+        expect(readPortFile()).toMatchObject({ pid: child.pid });
+      } finally {
+        fs.rmSync(childFile, { force: true });
+        child.stop();
+      }
+    });
+
+    it('releases this window\u2019s per-instance entry when the shared pointer is absent', () => {
+      const ownFile = writeEntryFile(process.pid, entry(process.pid, 3098, new Date().toISOString()));
+
+      const outcome = releaseOwnedPortFile('http://127.0.0.1:3098/mcp');
+      expect(outcome).toBe('absent');
+      expect(fs.existsSync(ownFile)).toBe(false);
+    });
+
+    it('sweeps per-instance entries left by dead windows and keeps live ones', () => {
+      const dead = deadPid();
+      const deadFile = writeEntryFile(dead, entry(dead, 4001, new Date().toISOString()));
+      const liveFile = writeEntryFile(process.pid, entry(process.pid, 3098, new Date().toISOString()));
+
+      const result = sweepStalePortFiles();
+      expect(result.removed).toContain(path.basename(deadFile));
+      expect(fs.existsSync(deadFile)).toBe(false);
+      expect(fs.existsSync(liveFile)).toBe(true);
+    });
+
+    it('cleanupPortFile removes this window\u2019s per-instance entry', () => {
+      writePortFile(entry(process.pid, 3098, new Date().toISOString()));
+      expect(fs.existsSync(PER_PID_PORT_FILE)).toBe(true);
+
+      cleanupPortFile();
+      expect(fs.existsSync(PER_PID_PORT_FILE)).toBe(false);
+    });
+
+    it('marks its per-instance entry stopped before unlinking, so a failed unlink cannot leak a live URI', () => {
+      const ownFile = writeEntryFile(process.pid, entry(process.pid, 3098, new Date().toISOString()));
+      unlinkFailure.enabled = true;
+      try {
+        // No shared pointer: only this window's per-instance entry exists.
+        expect(releaseOwnedPortFile('http://127.0.0.1:3098/mcp')).toBe('absent');
+      } finally {
+        unlinkFailure.enabled = false;
+      }
+
+      // The unlink failed, but the entry must now read as stopped.
+      expect(fs.existsSync(ownFile)).toBe(true);
+      expect(JSON.parse(fs.readFileSync(ownFile, 'utf8'))).toMatchObject({ status: 'stopped' });
+      expect(listActivePortInfos()).toEqual([]);
+      expect(getActiveUri()).toBeNull();
+      expect(getActivePortInfo()).toBeNull();
+    });
+
+    it('ignores a stopped per-instance marker even though its PID is alive', () => {
+      fs.mkdirSync(PORT_DIR, { recursive: true });
+      fs.writeFileSync(
+        PER_PID_PORT_FILE,
+        JSON.stringify({ status: 'stopped', stopped: new Date().toISOString() }),
+        'utf8'
+      );
+
+      expect(listActivePortInfos()).toEqual([]);
+      expect(getActiveUri()).toBeNull();
+    });
+
+    it('falls back to the shared pointer when its own per-instance entry was marked stopped', () => {
+      writePortFile(entry(process.pid, 3098, new Date().toISOString()));
+      // Simulate the failed-unlink outcome for this window's own entry.
+      fs.writeFileSync(
+        PER_PID_PORT_FILE,
+        JSON.stringify({ status: 'stopped', stopped: new Date().toISOString() }),
+        'utf8'
+      );
+
+      // The pointer (same PID, still live) keeps discovery working.
+      expect(getActiveUri()).toBe('http://127.0.0.1:3098/mcp');
+      expect(listActivePortInfos().map((i) => i.pid)).toEqual([process.pid]);
     });
   });
 });

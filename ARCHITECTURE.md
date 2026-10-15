@@ -111,7 +111,7 @@ Called once from `extension.ts` `activate()`. Also snaps the current active sess
 - **Body limit**: 2MB hard cap; 413 JSON-RPC error if exceeded
 - **Per-request servers**: New `McpServer` + `StreamableHTTPServerTransport` per request
 - **Header normalization**: Injects `accept` and `content-type` headers the MCP SDK expects
-- **Listener cleanup**: synchronous ownership-checked port-file release on stop; bounded teardown (`server.close()` → per-request transport closers → `closeIdleConnections()` → `closeAllConnections()`); joinable/idempotent stop; per-request transport registry. Server lifetime equals the extension-activation lifetime — debug-session transitions never start/stop the listener. Stale discovery files left by a crashed/hard-killed window (dead-PID `port.json`, abandoned per-PID temp files) are swept on `activate()`
+- **Listener cleanup**: synchronous ownership-checked port-file release on stop; bounded teardown (`server.close()` → per-request transport closers → `closeIdleConnections()` → `closeAllConnections()`); joinable/idempotent stop; per-request transport registry. Server lifetime equals the extension-activation lifetime — debug-session transitions never start/stop the listener. **Multi-window discovery**: each window publishes `port.<pid>.json` next to the shared `port.json` pointer, readers resolve the newest live entry (`listActivePortInfos()`), and stale artifacts (dead-PID entries, abandoned per-PID temp files) are swept on `activate()`
 
 ### 7. Breakpoint Management
 

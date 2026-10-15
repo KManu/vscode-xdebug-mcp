@@ -88,18 +88,22 @@ describe('Xdebug MCP deactivate contract (in-host)', function () {
     await delay(200);
   });
 
-  it('settles deactivate(), severs the held SSE, and removes the port file', async function () {
+  it('settles deactivate(), severs the held SSE, and removes the discovery files', async function () {
     // H3 guard: fail loudly instead of silently using the real ~/.vscode-xdebug-mcp.
     assert.strictEqual(process.env.XDEBUG_MCP_LIFECYCLE, '1',
       'run via `npm run test:e2e:lifecycle` (direct vscode-test invocations must set XDEBUG_MCP_PORT_DIR and XDEBUG_MCP_LIFECYCLE=1)');
     const portDir = process.env.XDEBUG_MCP_PORT_DIR;
     assert.ok(portDir, 'XDEBUG_MCP_PORT_DIR must be set by the lifecycle config');
     const portFile = path.join(portDir, 'port.json');
+    const perPidFile = path.join(portDir, `port.${process.pid}.json`);
 
     const info = await getServerPort();
     assert.strictEqual(info.host, '127.0.0.1');
     // The test runs inside the extension host, so the entry must be ours.
     assert.strictEqual(info.pid, process.pid, 'port file must belong to this extension host');
+    // Multi-window contract: this window must also have published its own
+    // per-instance entry (`port.<pid>.json`), not just the shared pointer.
+    assert.ok(fs.existsSync(perPidFile), 'per-instance discovery file must exist while the server runs');
 
     // 1. Hold a real GET /mcp SSE stream: the condition that blocks the old
     //    server.close(cb) path.
@@ -125,8 +129,9 @@ describe('Xdebug MCP deactivate contract (in-host)', function () {
     // 3. The held connection must be SEVERED, not merely outlived.
     assert.ok(await pollUntil(() => sse!.closed(), SEVER_BUDGET_MS), 'held SSE connection must be closed by deactivate()');
 
-    // 4. The discovery file must be gone.
+    // 4. The discovery files must be gone.
     assert.ok(await pollUntil(() => !fs.existsSync(portFile), 2000), 'port file must be removed by deactivate()');
+    assert.ok(await pollUntil(() => !fs.existsSync(perPidFile), 2000), 'per-instance discovery file must be removed by deactivate()');
 
     // 5. Invariant: nothing accepts new connections.
     assert.strictEqual(await tcpProbe(info.port), 'refused', 'no listener may accept connections after deactivate()');
