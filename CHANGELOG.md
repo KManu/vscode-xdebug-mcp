@@ -22,6 +22,7 @@
 
 - **Biome formatter**: Adopted Biome (`@biomejs/biome` 2.5.5) as the project formatter, ending formatter-induced working-tree churn.
 - **Repo cleanup**: Untracked agent state and ad-hoc working docs, and stopped packaging dev/agent tooling into the `.vsix` (`c29e7ed`).
+- **Leaner `.vsix`**: dev-only files no longer ship in the packaged extension — the test-runner config (`.vscode-test.js`), Biome config, agent docs (`CLAUDE.md`, `ARCHITECTURE.md`) and `scripts/**`.
 
 ---
 

@@ -31,3 +31,10 @@ node_modules/**/benchmarks/**
 .vscode-test/**
 PLAN*.md
 REVIEW*.md
+
+# Dev-only configs, agent docs and test scripts — never ship these
+.vscode-test.js
+biome.json
+CLAUDE.md
+ARCHITECTURE.md
+scripts/**
