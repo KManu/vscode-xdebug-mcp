@@ -7,7 +7,10 @@ import { log } from './logger';
 // don't race on the real port file (EPERM on Windows atomic rename).
 const PORT_DIR = process.env.XDEBUG_MCP_PORT_DIR || path.join(os.homedir(), '.vscode-xdebug-mcp');
 const PORT_FILE = path.join(PORT_DIR, 'port.json');
-const TMP_FILE = path.join(PORT_DIR, 'port.json.tmp');
+// Per-process temp name: every VS Code window shares PORT_DIR, so a shared
+// temp name lets one window's write/cleanup clobber another's atomic write.
+// Exported so the unit tests pin the per-PID naming (H4).
+export const TMP_FILE = path.join(PORT_DIR, `port.json.${process.pid}.tmp`);
 
 export interface PortInfo {
   uri: string;
@@ -52,18 +55,18 @@ export function writePortFile(info: PortInfo): void {
 /**
  * Mark the port file as stopped (server is no longer running).
  */
-export function writeStoppedFile(): void {
+export function writeStoppedFile(): boolean {
   try {
     fs.mkdirSync(PORT_DIR, { recursive: true });
-    const info: StoppedInfo = {
-      status: 'stopped',
-      stopped: new Date().toISOString(),
-    };
+    const info: StoppedInfo = { status: 'stopped', stopped: new Date().toISOString() };
     const json = JSON.stringify(info, null, 2);
     fs.writeFileSync(TMP_FILE, json, { encoding: 'utf8', mode: 0o644 });
     fs.renameSync(TMP_FILE, PORT_FILE);
-  } catch {
-    // Best-effort; port file cleanup is not critical.
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log.warn(`Failed to write stopped marker: ${message}`);
+    return false;
   }
 }
 
@@ -104,8 +107,9 @@ export function getActiveUri(): string | null {
     return null;
   }
 
-  // Staleness check: if the recorded PID isn't alive, treat as stopped.
-  if (!isPidAlive(info.pid)) {
+  // Staleness check: if the recorded PID isn't alive (or is missing/invalid —
+  // readPortFile normalizes to 0, which is never a real owner), treat as stopped.
+  if (!isOwnerAlive(info.pid)) {
     return null;
   }
 
@@ -120,7 +124,7 @@ export function getActivePortInfo(): PortInfo | null {
   if (!info || 'status' in info) {
     return null;
   }
-  if (!isPidAlive(info.pid)) {
+  if (!isOwnerAlive(info.pid)) {
     return null;
   }
   return info;
@@ -140,7 +144,185 @@ function isPidAlive(pid: number): boolean {
 }
 
 /**
- * Remove the port file entirely. Called on extension deactivate.
+ * True when a discovery entry's PID could be a live owner.
+ * PID <= 0 (missing/invalid in the file) is never a live owner: process.kill(0)
+ * targets the caller's process group, not a real peer process.
+ */
+function isOwnerAlive(pid: number): boolean {
+  return pid > 0 && isPidAlive(pid);
+}
+
+export interface StaleSweepResult {
+  /** Base names of stale artifacts that were removed. */
+  removed: string[];
+  /** Base names of artifacts that were examined and left in place. */
+  kept: string[];
+}
+
+const PER_PID_TMP_RE = /^port\.json\.(\d+)\.tmp$/;
+
+/**
+ * Remove discovery artifacts left behind by a process that died without
+ * running deactivate() (hard kill, extension-host crash, power loss).
+ *
+ * Readers already ignore dead-PID entries (getActiveUri/getActivePortInfo),
+ * but nothing else ever removes those files: only their owner unlinks on a
+ * clean stop. This is best-effort housekeeping on activate, never a
+ * substitute for releaseOwnedPortFile().
+ *
+ * Safety rules — never throws, never touches a live instance's files:
+ *  - a live entry is stale only when its PID is provably not alive;
+ *  - a stopped marker is stale by definition (a live owner only writes one
+ *    immediately before unlinking it);
+ *  - PORT_FILE is re-read and compared (uri + pid + started) right before the
+ *    unlink, so a window that replaced the entry mid-sweep keeps it;
+ *  - unreadable/corrupt files and temp names without a PID are left alone
+ *    (fail closed: deleting what we do not understand could race a writer).
+ *
+ * Known limits: the confirm-read → unlink sequence is not atomic, so a live
+ * window that publishes its entry inside that microsecond window can lose its
+ * discovery file (its server keeps running; only discovery is affected). PID
+ * liveness is namespace-relative, like the read-time checks: a live peer in a
+ * different PID namespace can look dead and be swept.
+ */
+export function sweepStalePortFiles(): StaleSweepResult {
+  const removed: string[] = [];
+  const kept: string[] = [];
+  const remove = (name: string, fullPath: string) => {
+    try {
+      fs.unlinkSync(fullPath);
+      removed.push(name);
+    } catch {
+      kept.push(name);
+    }
+  };
+
+  const current = readPortFile();
+  if (current !== null) {
+    if ('status' in current) {
+      // Re-read before unlinking, same reason as the dead-PID path below:
+      // another window may have replaced the marker with a live entry since
+      // our first read.
+      const confirm = readPortFile();
+      if (confirm !== null && 'status' in confirm) {
+        remove('port.json', PORT_FILE);
+      } else {
+        kept.push('port.json');
+      }
+    } else if (!isOwnerAlive(current.pid)) {
+      // Re-read right before unlinking: if another window replaced the dead
+      // entry after our first read, the newer (live) content wins.
+      const confirm = readPortFile();
+      const unchanged =
+        confirm !== null &&
+        !('status' in confirm) &&
+        confirm.uri === current.uri &&
+        confirm.pid === current.pid &&
+        confirm.started === current.started;
+      if (unchanged) {
+        remove('port.json', PORT_FILE);
+      } else {
+        kept.push('port.json');
+      }
+    } else {
+      kept.push('port.json');
+    }
+  } else {
+    try {
+      if (fs.existsSync(PORT_FILE)) {
+        kept.push('port.json');
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(PORT_DIR);
+  } catch {
+    // Directory does not exist yet (first activation on this machine).
+    return { removed, kept };
+  }
+  for (const name of entries) {
+    const match = PER_PID_TMP_RE.exec(name);
+    if (!match) {
+      continue;
+    }
+    if (isOwnerAlive(Number(match[1]))) {
+      kept.push(name);
+    } else {
+      remove(name, path.join(PORT_DIR, name));
+    }
+  }
+
+  return { removed, kept };
+}
+
+export type PortFileReleaseOutcome = 'released' | 'foreign' | 'absent' | 'unreadable' | 'error';
+
+/**
+ * Remove the discovery file, but only if it belongs to this instance.
+ *
+ * Ownership is checked BEFORE the stopped marker is written: the marker
+ * replaces the live PortInfo and destroys the only ownership evidence
+ * (uri + pid). Foreign live entries (other window / newer activation) are
+ * left untouched. Fails closed on an unreadable/corrupt file.
+ */
+export function releaseOwnedPortFile(
+  expectedUri: string,
+  expectedPid: number = process.pid
+): PortFileReleaseOutcome {
+  const current = readPortFile();
+  if (current === null) {
+    let exists = false;
+    try {
+      exists = fs.existsSync(PORT_FILE);
+    } catch {
+      /* ignore */
+    }
+    if (exists) {
+      log.warn('Port file exists but could not be read; leaving it untouched');
+      return 'unreadable';
+    }
+    return 'absent';
+  }
+
+  if (!('status' in current) && (current.uri !== expectedUri || current.pid !== expectedPid)) {
+    log.info(
+      `Port file belongs to another live instance (pid ${current.pid}, ${current.uri}); not touching it`
+    );
+    return 'foreign';
+  }
+
+  // Ours (or already stopped): mark stopped first so readers see a stopped
+  // state even if the unlink fails (Windows EPERM with an open reader).
+  // The marker result is reported (arbiter M2): if the marker write fails AND
+  // the unlink fails, the file still carries a live-looking PortInfo.
+  const marked = writeStoppedFile();
+  if (!marked) {
+    log.warn('Stopped marker could not be written; removing the port file anyway');
+  }
+  try {
+    fs.unlinkSync(PORT_FILE);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log.warn(`Failed to remove port file: ${message}`);
+    return 'error';
+  }
+  try {
+    fs.unlinkSync(TMP_FILE);
+  } catch {
+    /* ignore */
+  }
+  return 'released';
+}
+
+/**
+ * Low-level, unconditional removal of the discovery files. Production code
+ * must call releaseOwnedPortFile() instead: this function deletes whatever is
+ * on disk and MUST NOT be called without an ownership check. Kept for the
+ * port-file unit tests.
  */
 export function cleanupPortFile(): void {
   try {

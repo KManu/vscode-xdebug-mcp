@@ -15,7 +15,8 @@ export interface PortInfo {
   started: string;
 }
 
-const PORT_FILE = path.join(os.homedir(), '.vscode-xdebug-mcp', 'port.json');
+const PORT_DIR = process.env.XDEBUG_MCP_PORT_DIR || path.join(os.homedir(), '.vscode-xdebug-mcp');
+const PORT_FILE = path.join(PORT_DIR, 'port.json');
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));

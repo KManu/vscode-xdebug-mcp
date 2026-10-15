@@ -51,4 +51,16 @@ if (useInstallation) {
   config.installExtensions = ['xdebug.php-debug'];
 }
 
+// Lifecycle run: isolate this instance's discovery file and mark the launch so
+// the test itself can hard-fail if isolation was bypassed (H3).
+if (process.env.npm_lifecycle_event === 'test:e2e:lifecycle') {
+  const lifecyclePortDir = path.join(__dirname, '.vscode-test', 'lifecycle-port-dir');
+  try {
+    fs.rmSync(lifecyclePortDir, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
+  config.env = { XDEBUG_MCP_PORT_DIR: lifecyclePortDir, XDEBUG_MCP_LIFECYCLE: '1' };
+}
+
 module.exports = defineConfig(config);
