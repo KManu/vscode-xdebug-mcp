@@ -102,7 +102,6 @@ dist
 
 # vuepress v2.x temp and cache directory
 .temp
-.cache
 
 # vitepress build output
 **/.vitepress/dist
@@ -134,8 +133,24 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
-*.vsix
-*.vsix
 
 # pi taskflow run state
 .pi/taskflows/
+
+# Personal agent workflow state & local config (kept on disk, not in git)
+.chain/
+.mcp.json
+.pi/settings.json
+
+# Ad-hoc agent plan/review working docs (root; kept on disk, not in git)
+/PLAN.md
+/PLAN_*.md
+/REVIEW_*.md
+
+# Project build/test outputs (explicit intent; the template rules above covered these only by accident)
+out/
+dist/
+coverage/
+.vscode-test/
+*.tsbuildinfo
+*.vsix

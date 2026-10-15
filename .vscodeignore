@@ -22,3 +22,12 @@ node_modules/**/example/**
 node_modules/**/examples/**
 node_modules/**/benchmark/**
 node_modules/**/benchmarks/**
+
+# Dev/agent tooling and working docs — never ship these
+.chain/**
+.claude/**
+.pi/**
+.mcp.json
+.vscode-test/**
+PLAN*.md
+REVIEW*.md
