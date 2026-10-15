@@ -6,7 +6,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-const PORT_FILE = path.join(os.homedir(), '.vscode-xdebug-mcp', 'port.json');
+const PORT_DIR = process.env.XDEBUG_MCP_PORT_DIR || path.join(os.homedir(), '.vscode-xdebug-mcp');
+const PORT_FILE = path.join(PORT_DIR, 'port.json');
 
 // Register at module load time — must happen before any test file runs.
 // Mocha's --require loads this file and executes it synchronously before

@@ -1,16 +1,30 @@
 import * as vscode from 'vscode';
-import { startHttpServer, stopHttpServer, getLastKnownUri } from './mcp/httpTransport';
+import { startHttpServer, stopHttpServer, getLastKnownUri, MCP_START_SUPERSEDED_MESSAGE } from './mcp/httpTransport';
 import { registerSessionTracking, getSessionCount } from './debug/dapBridge';
 import { log } from './utils/logger';
-import { getActiveUri } from './utils/portFile';
+import { getActiveUri, sweepStalePortFiles } from './utils/portFile';
 import { previewMcpJsonChange, writeWorkspaceMcpJson } from './utils/mcpJson';
+
+// VS Code may call MCP definition providers eagerly, even during/after
+// deactivation. The flag prevents a provider call from resurrecting the
+// listener after shutdown (invariant #9).
+let deactivated = false;
 
 // VS Code entrypoint. This runs inside the Extension Host process, not your app.
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  deactivated = false;
   // Track debug session lifecycle so MCP tools can target sessions explicitly.
   registerSessionTracking(context.subscriptions);
   // Use the extension version as the MCP server version for consistency.
   const serverVersion = String(context.extension.packageJSON.version ?? '0.0.1');
+
+  // Housekeeping: remove discovery files abandoned by windows that died
+  // without running deactivate() (hard kill / host crash). Readers already
+  // ignore dead-PID entries; this stops the directory accumulating them.
+  const swept = sweepStalePortFiles();
+  if (swept.removed.length > 0) {
+    log.info(`Swept ${swept.removed.length} stale port file artifact(s): ${swept.removed.join(', ')}`);
+  }
 
   let mcpUri: string | undefined;
   let usedFallbackPort = false;
@@ -217,8 +231,18 @@ url = "${uri}"`;
     onDidChangeMcpServerDefinitions: definitionsChanged.event,
     provideMcpServerDefinitions: async (): Promise<vscode.McpServerDefinition[]> => {
       try {
+        if (deactivated) {
+          return [];
+        }
         // The HTTP server is reused; this just returns the definition.
         const httpUri = await startHttpServer({ version: serverVersion });
+        if (deactivated) {
+          // Deactivation raced this provider call: do not leave a listener
+          // behind (invariant #9). Mirrors the required re-stop in
+          // src/mcp/httpTransport.ts scenario 5b.
+          await stopHttpServer();
+          return [];
+        }
         return [
           // Typed constructor: (label, uri: Uri, headers?, version?). Passing
           // a single options object makes `label` the whole object, which VS
@@ -227,6 +251,12 @@ url = "${uri}"`;
         ];
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        // OBJ-F2: a start superseded by deactivation is expected during window
+        // reload / host restart; do not show an error toast while shutting down.
+        if (deactivated || message === MCP_START_SUPERSEDED_MESSAGE) {
+          log.info(`MCP server start superseded during deactivation: ${message}`);
+          return [];
+        }
         void vscode.window.showErrorMessage(`Failed to start Xdebug MCP server: ${message}`);
         return [];
       }
@@ -237,7 +267,9 @@ url = "${uri}"`;
   context.subscriptions.push(provider);
   context.subscriptions.push(
     new vscode.Disposable(() => {
-      // Ensure we stop the HTTP server and clean up the port file.
+      // Ensure we stop the HTTP server and clean up the port file. stopHttpServer()
+      // is idempotent, joinable, and never rejects, so fire-and-forget is safe
+      // here (async disposables are not awaited: @types/vscode/index.d.ts:8371).
       void stopHttpServer();
     })
   );
@@ -246,5 +278,10 @@ url = "${uri}"`;
 // VS Code calls deactivate during window close/reload.
 // stopHttpServer handles port file cleanup internally.
 export function deactivate(): Thenable<void> | void {
+  deactivated = true;
   return stopHttpServer();
 }
+
+// Test-only re-export so the in-host lifecycle suite can assert teardown
+// bookkeeping on the live bundle (precedent: src/utils/logger.ts:65).
+export { _getTeardownStateForTesting } from './mcp/httpTransport';

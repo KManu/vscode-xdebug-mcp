@@ -1,8 +1,9 @@
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from 'node:http';
+import { type Socket } from 'node:net';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { makeServer } from './server';
 import { log } from '../utils/logger';
-import { writePortFile, writeStoppedFile, cleanupPortFile } from '../utils/portFile';
+import { writePortFile, releaseOwnedPortFile } from '../utils/portFile';
 
 // We bind locally so only the current machine can reach the MCP server.
 const HOST = '127.0.0.1';
@@ -17,6 +18,40 @@ const MAX_PORT_ATTEMPTS = 3;
 let runningServer: HttpServer | undefined;
 let serverUriPromise: Promise<string> | undefined;
 let lastKnownUri: string | undefined;
+
+// Message identity for a start cancelled by a stop. The provider/activate
+// callers use this constant instead of matching the string literal.
+export const MCP_START_SUPERSEDED_MESSAGE = 'MCP server start superseded by stop';
+
+// Monotonic token: bumped by every stop that actually releases a server and by
+// every start. Async continuations verify they are still current.
+let generation = 0;
+
+// Reject handle for the one start that may be unsettled. net.Server.close()
+// during an in-flight listen cancels the bind WITHOUT firing the listen
+// callback and without emitting 'error' (probe: close cb ERR_SERVER_NOT_RUNNING).
+let pendingStart: { generation: number; reject: (error: Error) => void } | undefined;
+
+// Joins concurrent/repeat stops: deactivate() and the subscription disposable
+// both call stopHttpServer(); the second caller awaits the same teardown.
+let stoppingPromise: Promise<void> | undefined;
+
+// Per-request closers (MCP server + transport). stopHttpServer() invokes them
+// so SSE streams end with res.end() before sockets are destroyed.
+const activeRequestClosers = new Set<() => Promise<void>>();
+
+// Accepted sockets: fallback destroy path (Node < 18.2, @types/node/http.d.ts:482).
+const activeSockets = new Set<Socket>();
+
+/** Release the discovery file from event handlers without risking a throw. */
+function releasePortFileSafely(uri: string): void {
+  try {
+    releaseOwnedPortFile(uri);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[xdebug-mcp] port file release failed: ${message}`);
+  }
+}
 
 // Extract the JSON-RPC request id for the 408 timeout response: string ids are
 // valid JSON-RPC (they are typically not used by MCP clients, but the server
@@ -52,10 +87,36 @@ export function handleRequestTimeout(
   req.destroy();
 }
 
-export async function startHttpServer(options: { version?: string } = {}): Promise<string> {
-  // Prevent multiple simultaneous server starts on extension reloads.
+export function startHttpServer(options: { version?: string } = {}): Promise<string> {
+  // Single-flight: the promise is assigned synchronously, so concurrent callers
+  // (activate + the MCP provider) share exactly one server.
   if (serverUriPromise) {
     return serverUriPromise;
+  }
+  const myGeneration = ++generation;
+  const attempt = startHttpServerInternal(options, myGeneration);
+  serverUriPromise = attempt;
+  // A failed/superseded start must not poison the module. Identity check
+  // avoids clobbering a newer start.
+  void attempt.catch(() => {
+    if (serverUriPromise === attempt) {
+      serverUriPromise = undefined;
+    }
+  });
+  return attempt;
+}
+
+async function startHttpServerInternal(
+  options: { version?: string },
+  myGeneration: number
+): Promise<string> {
+  // Serialize restart-after-stop: never create a second listener while a
+  // previous teardown is still in flight.
+  if (stoppingPromise) {
+    await stoppingPromise;
+  }
+  if (myGeneration !== generation) {
+    throw new Error(MCP_START_SUPERSEDED_MESSAGE);
   }
 
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -94,6 +155,18 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
     });
+
+    let closed = false;
+    const closeTransport = async () => {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      activeRequestClosers.delete(closeTransport);
+      await transport.close().catch(() => undefined);
+      await server.close().catch(() => undefined);
+    };
+    activeRequestClosers.add(closeTransport);
 
     // Normalize headers so the MCP SDK sees the expected Accept/Content-Type.
     const accept = req.headers.accept;
@@ -146,16 +219,6 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
         req.on('error', reject);
       });
 
-    let closed = false;
-    const closeTransport = async () => {
-      if (closed) {
-        return;
-      }
-      closed = true;
-      await transport.close().catch(() => undefined);
-      await server.close().catch(() => undefined);
-    };
-
     const handleClose = () => {
       void closeTransport();
     };
@@ -185,6 +248,9 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
             })
           );
         }
+        // Release the per-request server + transport now; the retained 'close'
+        // listener would also do it, but this keeps cleanup deterministic.
+        void closeTransport();
         return;
       }
     }
@@ -201,35 +267,73 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
         res.end(JSON.stringify({ error: message }));
       }
     } finally {
-      // Avoid leaking listeners in case of streaming responses.
-      if (typeof res.off === 'function') {
-        res.off('close', handleClose);
-      } else {
-        res.removeListener('close', handleClose);
+      if (res.writableEnded) {
+        // The response ended synchronously inside handleRequest (SDK error
+        // responses). Normal JSON-RPC responses with enableJsonResponse are
+        // written later by the SDK's send() (streamableHttp.js:609-611), so
+        // right after handleRequest() resolves writableEnded === false; their
+        // cleanup goes through the retained 'close' listener below.
+        void closeTransport();
       }
-      // Let the response lifecycle determine when to close the transport.
-      // Closing here can end the response before the server sends JSON-RPC output.
+      // For a streaming (SSE) response, handleRequest() returns while the
+      // response is open. Keep handleClose attached: it fires when the client
+      // disconnects OR when stopHttpServer() ends the stream via
+      // closeTransport() (transport.close() → res.end()).
     }
   });
 
-  // Detect unexpected server death and reset state so future starts can recover.
+  httpServer.on('connection', (socket: Socket) => {
+    activeSockets.add(socket);
+    socket.on('close', () => activeSockets.delete(socket));
+  });
+
   httpServer.on('close', () => {
     if (runningServer === httpServer) {
       log.info('HTTP server closed unexpectedly');
       runningServer = undefined;
       serverUriPromise = undefined;
+      const ownedUri = lastKnownUri;
+      lastKnownUri = undefined;
+      if (ownedUri !== undefined) {
+        releasePortFileSafely(ownedUri);
+      }
     }
   });
 
-  serverUriPromise = new Promise<string>((resolve, reject) => {
-    // Try default port first; fall back to port 0 (OS-assigned) on EADDRINUSE.
+  return new Promise<string>((resolve, reject) => {
+    const settleResolve = (uri: string) => {
+      if (pendingStart?.generation === myGeneration) {
+        pendingStart = undefined;
+      }
+      resolve(uri);
+    };
+    const settleReject = (error: Error) => {
+      if (pendingStart?.generation === myGeneration) {
+        pendingStart = undefined;
+      }
+      reject(error);
+    };
+    // Invariant (relied on by stopHttpServer's no-server branch): pendingStart
+    // and runningServer are assigned in the same synchronous prologue, so there
+    // is no interleaving where pendingStart is set but runningServer is not.
+    // Every path that clears runningServer also clears/rejects pendingStart
+    // (identity-checked settleReject; stopHttpServer's sync prefix clears both).
+    pendingStart = { generation: myGeneration, reject: settleReject };
+
+    // Try default port first; fall back to an OS-assigned port on EADDRINUSE.
     const tryListen = (port: number) => {
       httpServer.listen(port, HOST, () => {
+        if (myGeneration !== generation) {
+          // A stop landed while the bind was in flight. close() unbinds; the
+          // close callback swallows ERR_SERVER_NOT_RUNNING.
+          httpServer.close(() => undefined);
+          settleReject(new Error(MCP_START_SUPERSEDED_MESSAGE));
+          return;
+        }
         const actualPort = (httpServer.address() as { port: number }).port;
         const uri = `http://${HOST}:${actualPort}/mcp`;
         lastKnownUri = uri;
 
-        // Write the port file for external clients to discover the server.
         writePortFile({
           uri,
           host: HOST,
@@ -239,19 +343,23 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
           started: new Date().toISOString(),
         });
 
-        resolve(uri);
+        settleResolve(uri);
       });
     };
 
     let portAttempts = 0;
 
     httpServer.on('error', (err: NodeJS.ErrnoException) => {
+      if (myGeneration !== generation) {
+        settleReject(new Error(MCP_START_SUPERSEDED_MESSAGE));
+        return;
+      }
       if (err.code === 'EADDRINUSE' && portAttempts < MAX_PORT_ATTEMPTS) {
         portAttempts++;
         if (portAttempts >= MAX_PORT_ATTEMPTS) {
-          serverUriPromise = undefined;
           runningServer = undefined;
-          reject(
+          lastKnownUri = undefined;
+          settleReject(
             new Error(
               `Failed to bind MCP server after ${MAX_PORT_ATTEMPTS} attempts. Port ${DEFAULT_PORT} and dynamic ports are all occupied.`
             )
@@ -264,47 +372,184 @@ export async function startHttpServer(options: { version?: string } = {}): Promi
         );
         tryListen(fallbackPort ?? 0);
       } else {
-        serverUriPromise = undefined;
-        runningServer = undefined;
-        reject(err);
+        // Non-retryable error: never leave a bound listener or a discovery
+        // entry orphaned.
+        if (httpServer.listening) {
+          httpServer.close(() => undefined);
+        }
+        if (runningServer === httpServer) {
+          runningServer = undefined;
+          // H1 FIX: this attempt may already have FULFILLED in the listen
+          // callback (post-listen error), so the wrapper's identity-checked
+          // catch will never run for it. Without this line every later
+          // startHttpServer() returns this dead URI forever (regression vs.
+          // the current code at src/mcp/httpTransport.ts:267).
+          serverUriPromise = undefined;
+          const ownedUri = lastKnownUri;
+          lastKnownUri = undefined;
+          if (ownedUri !== undefined) {
+            releasePortFileSafely(ownedUri);
+          }
+        }
+        settleReject(err);
       }
     });
 
     tryListen(DEFAULT_PORT);
     runningServer = httpServer;
   });
-
-  return serverUriPromise;
 }
 
 export function getLastKnownUri(): string | undefined {
   return lastKnownUri;
 }
 
-export async function stopHttpServer(): Promise<void> {
-  if (!runningServer) {
-    return;
+const STOP_GRACE_MS = 250;
+const STOP_CONFIRM_MS = 1500;
+
+/** Resolve with the promise's value, or 'timeout' — never rejects, never leaks a live timer. */
+function settleWithin<T>(promise: Promise<T>, ms: number): Promise<T | 'timeout'> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve('timeout'), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve('timeout');
+      }
+    );
+  });
+}
+
+export function stopHttpServer(): Promise<void> {
+  const server = runningServer;
+
+  if (!server) {
+    // H2 FIX: nothing this instance can release. Join an in-flight teardown
+    // (the normal deactivate() + subscriptions-dispose sequence shares one
+    // promise) but do NOT supersede a start that is waiting on that teardown:
+    // a join is not a new stop decision. pendingStart implies runningServer
+    // was set in the same synchronous prologue, so no pending start can exist
+    // here (see the invariant comment in startHttpServerInternal).
+    return stoppingPromise ?? Promise.resolve();
   }
 
-  // Mark port file as stopped before closing so readers see the stopped state.
-  writeStoppedFile();
+  // Supersede any in-flight start: close() during an in-flight listen cancels
+  // the bind without firing the listen callback or 'error' (probe), so settle
+  // the pending start explicitly.
+  generation++;
+  if (pendingStart) {
+    const superseded = pendingStart;
+    pendingStart = undefined;
+    superseded.reject(new Error(MCP_START_SUPERSEDED_MESSAGE));
+  }
 
-  const server = runningServer;
-  // Reset state BEFORE closing to avoid the close handler logging 'closed unexpectedly'.
+  // ── Synchronous release prefix (must never sit behind an await) ──────────
+  const ownedUri = lastKnownUri;
   runningServer = undefined;
   serverUriPromise = undefined;
   lastKnownUri = undefined;
+  if (ownedUri !== undefined) {
+    // OBJ-F4: never let a throw from logging/fs escape — releaseServer() below
+    // must run unconditionally and stopHttpServer() must never reject.
+    try {
+      const outcome = releaseOwnedPortFile(ownedUri);
+      log.info(`MCP server stopped; port file: ${outcome} (uri=${ownedUri})`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[xdebug-mcp] port file release failed during stop: ${message}`);
+    }
+  }
 
-  await new Promise<void>((resolve, reject) => {
-    server.close((err?: Error) => {
-      if (err) {
-        reject(err);
-        return;
-      }
-      resolve();
-    });
+  const teardown = releaseServer(server).finally(() => {
+    if (stoppingPromise === teardown) {
+      stoppingPromise = undefined;
+    }
   });
+  stoppingPromise = teardown;
+  return teardown;
+}
 
-  // Clean up port file after server is fully stopped.
-  cleanupPortFile();
+async function releaseServer(server: HttpServer): Promise<void> {
+  try {
+    // 1. Unbind and stop accepting. net.Server.close() releases the listening
+    //    socket synchronously; the callback only reports when connections end
+    //    (net.d.ts:618-628). ERR_SERVER_NOT_RUNNING is expected when the
+    //    listen had not completed (probe) and must not fail.
+    const closed = new Promise<void>((resolve) => {
+      try {
+        server.close((err?: Error) => {
+          if (err && (err as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') {
+            log.warn(`HTTP server close reported: ${err.message}`);
+          }
+          resolve();
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        log.warn(`HTTP server close threw: ${message}`);
+        resolve();
+      }
+    });
+
+    // 2. End SSE streams gracefully and close per-request MCP servers.
+    //    transport.close() calls res.end() on every standalone SSE stream
+    //    (streamableHttp.js:532-537) and on parsed in-flight POST responses
+    //    (registered in _streamMapping at :403, before the handler at :418),
+    //    which reach the client as an EMPTY HTTP 200 (probe 06, 6/6). Bounded
+    //    so a misbehaving transport cannot delay teardown.
+    const closers = [...activeRequestClosers];
+    activeRequestClosers.clear();
+    if (closers.length > 0) {
+      await settleWithin(
+        Promise.allSettled(closers.map((close) => Promise.resolve().then(close))),
+        STOP_GRACE_MS
+      );
+    }
+
+    // 3. Drop idle keep-alive sockets, then force-close everything left.
+    //    Order matters: close() first (unbind), then destroy connections
+    //    (closeAllConnections() alone does not unbind).
+    if (typeof server.closeIdleConnections === 'function') {
+      server.closeIdleConnections();
+    }
+    if (typeof server.closeAllConnections === 'function') {
+      server.closeAllConnections();
+    } else {
+      for (const socket of activeSockets) {
+        socket.destroy();
+      }
+    }
+
+    // 4. Confirm closure, but never block past the budget.
+    if ((await settleWithin(closed, STOP_CONFIRM_MS)) === 'timeout') {
+      log.warn('HTTP server close was not confirmed within the teardown budget; the listener was already released');
+    }
+  } catch (error) {
+    // stopHttpServer() must never reject: the subscription disposable is
+    // fire-and-forget, so a rejection here would be an unhandled rejection.
+    const message = error instanceof Error ? error.message : String(error);
+    log.warn(`Server teardown error (ignored): ${message}`);
+  } finally {
+    activeSockets.clear();
+  }
+}
+
+/** Test-only read-only view of teardown bookkeeping (precedent: logger._getChannelForTesting). */
+export function _getTeardownStateForTesting(): {
+  running: boolean;
+  stopping: boolean;
+  pendingStart: boolean;
+  sockets: number;
+  closers: number;
+} {
+  return {
+    running: runningServer !== undefined,
+    stopping: stoppingPromise !== undefined,
+    pendingStart: pendingStart !== undefined,
+    sockets: activeSockets.size,
+    closers: activeRequestClosers.size,
+  };
 }
