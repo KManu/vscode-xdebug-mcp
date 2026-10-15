@@ -13,6 +13,10 @@ let deactivated = false;
 // VS Code entrypoint. This runs inside the Extension Host process, not your app.
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   deactivated = false;
+  // Re-arm the shared logger for this activation. The module global survives
+  // in-host re-activation (and is reused by the lifecycle tests), so a channel
+  // disposed by deactivate() must not leave logging disarmed.
+  log.init('Xdebug MCP');
   // Track debug session lifecycle so MCP tools can target sessions explicitly.
   registerSessionTracking(context.subscriptions);
   // Use the extension version as the MCP server version for consistency.
@@ -279,9 +283,40 @@ url = "${uri}"`;
 // stopHttpServer handles port file cleanup internally.
 export function deactivate(): Thenable<void> | void {
   deactivated = true;
-  return stopHttpServer();
+  // 03a OBJ-C1: capture the arming generation synchronously. dispose(epoch)
+  // becomes a no-op if a later init() re-armed the logger before the teardown
+  // settles, so a stale teardown cannot kill a fresh activation's channel.
+  const epoch = log.currentEpoch();
+  const disposeLogger = (): void => {
+    try {
+      log.dispose(epoch);
+    } catch {
+      // Defense in depth: log.dispose() is throw-proof by construction.
+    }
+  };
+  // 03b OBJ-1: .then(fulfilled, rejected) instead of .finally() so the
+  // never-reject contract is owned HERE instead of delegated to
+  // stopHttpServer(). httpTransport.ts:530-534 enforces it today, but a
+  // future rejection must not escape deactivate(). The rejected branch logs
+  // with a throw-proof guard and is then discarded. Behavior decision: a
+  // teardown rejection is no longer propagated — VS Code already swallows
+  // deactivate() rejections (EH141 _deactivate -> .then(void 0, i => ...)).
+  return stopHttpServer().then(disposeLogger, (error: unknown) => {
+    try {
+      log.warn(`MCP server teardown rejected (ignored): ${error instanceof Error ? error.message : String(error)}`);
+    } catch {
+      // At shutdown even the console fallback may be unavailable — ignore.
+    }
+    disposeLogger();
+  });
 }
 
 // Test-only re-export so the in-host lifecycle suite can assert teardown
-// bookkeeping on the live bundle (precedent: src/utils/logger.ts:65).
+// bookkeeping on the live bundle (precedent: `log._getChannelForTesting` in
+// src/utils/logger.ts — line numbers in comments rot).
 export { _getTeardownStateForTesting } from './mcp/httpTransport';
+
+// Test-only re-export so the in-host lifecycle suite can drive/observe the
+// live bundle's logger (module identity: importing src/utils/logger directly
+// in the E2E would be a different instance than dist/extension.js).
+export { log as _logForTesting } from './utils/logger';
